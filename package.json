@@ -1,0 +1,16 @@
+{
+  "name": "motion-engine",
+  "version": "0.1.0",
+  "description": "Procedural human-motion engine for VRM avatars — natural body action WITHOUT motion capture. Pure, dependency-free, deterministic, headless-testable.",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "files": ["index.js"],
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "keywords": ["vrm", "three", "motion", "animation", "ik", "inverse-kinematics", "procedural", "avatar", "spring"],
+  "license": "MIT",
+  "author": "opaopa6969",
+  "repository": { "type": "git", "url": "https://github.com/opaopa6969/motion-engine.git" }
+}
