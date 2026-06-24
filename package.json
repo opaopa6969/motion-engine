@@ -1,6 +1,6 @@
 {
   "name": "motion-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Procedural human-motion engine for VRM avatars — natural body action WITHOUT motion capture. Pure, dependency-free, deterministic, headless-testable.",
   "type": "module",
   "main": "index.js",

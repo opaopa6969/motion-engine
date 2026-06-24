@@ -3,8 +3,10 @@
 //   node test.mjs    (or: npm test)
 import {
   MotionEngine, Gesture, Spring, MANAGED, REST,
-  Reach, solveTwoBone, fkHand, qFromEulerXYZ, qToEulerXYZ,
+  Reach, Place, PLACE_STYLES, solveTwoBone, fkHand, qFromEulerXYZ, qToEulerXYZ,
 } from './index.js';
+
+const D = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.error('  ✗ ' + msg); } };
@@ -138,6 +140,73 @@ const REST_HAND = fkHand(ARM.pU, ARM.pL, ARM.pH, RU, RL);
   ok(peakErr < 0.02, 'Reach brings the hand to the target at full extension (peakErr=' + peakErr.toFixed(4) + ')');
   for (let i = 0; i < 120; i++) last = eng.update(dt, { t: (72 + i) * dt, phase: 0, pose: {}, poseW: 0 });
   ok(Math.abs(last.rightUpperArm[2] - REST.rightUpperArm[2]) < 0.1, 'arm returns to rest after the reach');
+}
+
+// --- v0.2: Place action ----------------------------------------------------
+const GEO = Object.assign({}, ARM, { restW: [0, 0, 0] });
+const handAt = (pose) => fkHand(ARM.pU, ARM.pL, ARM.pH, qFromEulerXYZ(pose.rightUpperArm), qFromEulerXYZ(pose.rightLowerArm));
+function runPlace(target, opts, secs = 2.2) {
+  const eng = new MotionEngine();
+  eng.play(new Place('right', GEO, target, opts));
+  const dt = 1 / 60; const trace = [];
+  for (let i = 0; i < Math.ceil(secs * 60); i++) trace.push(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 }));
+  return trace;
+}
+
+// 11) Place(gentle) lands the hand on the target (through the spring chain)
+{
+  const target = [REST_HAND[0] + 0.12, REST_HAND[1] - 0.05, REST_HAND[2] + 0.08];
+  let peak = 1e9;
+  for (const pose of runPlace(target, { style: 'gentle' })) peak = Math.min(peak, D(handAt(pose), target));
+  ok(peak < 0.05, 'Place(gentle) lands the hand on the target (peakErr=' + peak.toFixed(4) + ')');
+}
+
+// 12) the hand ARCS up (lift over a downward target — not a straight drop)
+{
+  const target = [REST_HAND[0] + 0.12, REST_HAND[1] - 0.06, REST_HAND[2] + 0.08];
+  let maxY = -1e9;
+  for (const pose of runPlace(target, { style: 'gentle', arc: 0.1 }, 1.0)) maxY = Math.max(maxY, handAt(pose)[1]);
+  ok(maxY > REST_HAND[1] + 0.01, 'hand lifts above the start (gravity lift arc, not a straight drop)');
+}
+
+// 13) Place drives the shoulder (roll/swing) and the wrist (aim/snap/twist)
+{
+  let sh = 0, wr = 0;
+  for (const pose of runPlace([REST_HAND[0] + 0.12, REST_HAND[1], REST_HAND[2] + 0.08], { style: 'jam' }, 1.0)) {
+    sh = Math.max(sh, Math.abs(pose.rightShoulder[0]) + Math.abs(pose.rightShoulder[1]));
+    wr = Math.max(wr, Math.abs(pose.rightHand[0]) + Math.abs(pose.rightHand[1]) + Math.abs(pose.rightHand[2]));
+  }
+  ok(sh > 0.02, 'Place rolls the shoulder (clavicle lead)');
+  ok(wr > 0.02, 'Place drives the wrist independently (aim/snap/twist)');
+}
+
+// 14) snap gives a sharper wrist flick than gentle (peak angular speed)
+{
+  const peakWristSpeed = (style) => {
+    let prev = null, mx = 0; const dt = 1 / 60;
+    for (const pose of runPlace([REST_HAND[0] + 0.1, REST_HAND[1], REST_HAND[2] + 0.06], { style })) {
+      const v = pose.rightHand;
+      if (prev) mx = Math.max(mx, (Math.abs(v[0] - prev[0]) + Math.abs(v[1] - prev[1]) + Math.abs(v[2] - prev[2])) / dt);
+      prev = v;
+    }
+    return mx;
+  };
+  ok(peakWristSpeed('snap') > peakWristSpeed('gentle') * 1.5, 'snap = a faster wrist flick than gentle');
+}
+
+// 15) linger keeps the hand on the tile longer than snap (なかなか離さない)
+{
+  const target = [REST_HAND[0] + 0.12, REST_HAND[1] - 0.04, REST_HAND[2] + 0.08];
+  const framesOn = (style) => runPlace(target, { style }).filter((pose) => D(handAt(pose), target) < 0.04).length;
+  ok(framesOn('linger') > framesOn('snap'), 'linger dwells on the tile longer than snap');
+}
+
+// 16) Place is deterministic
+{
+  const run = () => runPlace([REST_HAND[0] + 0.1, REST_HAND[1], REST_HAND[2] + 0.06], { style: 'jam' }, 1.4).map((p) => p.rightHand);
+  const a = run(), b = run(); let same = true;
+  for (let i = 0; i < a.length; i++) for (let k = 0; k < 3; k++) if (a[i][k] !== b[i][k]) same = false;
+  ok(same, 'Place is deterministic');
 }
 
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);

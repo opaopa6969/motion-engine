@@ -27,12 +27,15 @@
 
 // ----------------------------------------------------------- managed skeleton
 
-// The humanoid bones this framework drives. Kept minimal on purpose (upper-body
-// seated mahjong is the sweet spot); neck/hands/fingers join in Phase 2 (IK).
+// The humanoid bones this framework drives. v0.2: shoulders (clavicle) and hands
+// (wrist) join so the reach chain is shoulder→upperArm→lowerArm→hand — letting
+// the shoulder roll/swing and the wrist aim/snap/twist independently of the
+// elbow. Bones a given VRM lacks (clavicle is OPTIONAL in VRM) are simply
+// dropped by the renderer, so listing them here is safe. Fingers: v0.3.
 export const MANAGED = Object.freeze([
   'spine', 'chest', 'head',
-  'leftUpperArm', 'leftLowerArm',
-  'rightUpperArm', 'rightLowerArm',
+  'leftShoulder', 'leftUpperArm', 'leftLowerArm', 'leftHand',
+  'rightShoulder', 'rightUpperArm', 'rightLowerArm', 'rightHand',
 ]);
 
 // Relaxed resting pose — the single source of truth for the host's rest pose.
@@ -46,6 +49,17 @@ export const REST = Object.freeze({
 });
 const ZERO3 = [0, 0, 0];
 const restOf = (bone) => REST[bone] || ZERO3;
+
+// Per-bone spring frequency: a lead→lag CHAIN. Proximal bones are stiff/fast,
+// distal bones soft/slow, so when a target moves the motion ripples
+// shoulder→upperArm→lowerArm→hand with overlap — the #1 read of mass/weight.
+// Bones absent here use the default (2.4).
+const SPRING_F = {
+  leftShoulder: 3.0, rightShoulder: 3.0,
+  leftUpperArm: 2.7, rightUpperArm: 2.7,
+  leftLowerArm: 2.3, rightLowerArm: 2.3,
+  leftHand: 1.9, rightHand: 1.9,
+};
 
 // ------------------------------------------------------------- spring dynamics
 
@@ -358,6 +372,107 @@ export class Reach {
   }
 }
 
+// ------------------------------------------------------------------- place (v0.2)
+//
+// A weight-aware "place a tile" action: the discard read as body language. One
+// reach is split into phases — windup → torso/shoulder LEAD + gravity ARC →
+// CONTACT (wrist snap + settle sink) → DWELL (linger) → RELEASE (peel) — and the
+// whole thing is parameterized so the SAME intent expresses differently:
+// そっと置く / ねじ込む / ピシッとスナップ / なかなか離さない.
+//
+// Everything is still L2 (kinematics + spring smoothing): no forces, no mass —
+// the "weight" is faked via overlap (the lead→lag spring chain), counter-lean,
+// a vertical arc, asymmetric timing and a settle sink. Zero-dep, deterministic.
+
+const _c01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const _smooth = (a, b, x) => { const t = _c01((x - a) / (b - a || 1e-6)); return t * t * (3 - 2 * t); };
+
+// style presets → parameter bundles. Map a seat's emotion to one of these and
+// the discard becomes a tell. Tune the numbers against the real avatars.
+export const PLACE_STYLES = Object.freeze({
+  gentle: { dur: 1.6, arc: 0.05, lead: 0.6, snap: 0.0, twist: 0.0, dwell: 0.18, release: 0.7, sink: 0.012 },
+  snap: { dur: 1.0, arc: 0.04, lead: 0.5, snap: 0.9, twist: 0.0, dwell: 0.0, release: 0.2, sink: 0.006 },
+  linger: { dur: 1.9, arc: 0.05, lead: 0.6, snap: 0.15, twist: 0.0, dwell: 0.5, release: 0.85, sink: 0.014 },
+  jam: { dur: 0.9, arc: 0.02, lead: 0.5, snap: 0.4, twist: 0.7, dwell: 0.1, release: 0.25, sink: 0.02 },
+  timid: { dur: 1.3, arc: 0.06, lead: 0.3, snap: 0.0, twist: 0.0, dwell: 0.1, release: 0.4, sink: 0.008 },
+});
+
+/**
+ * Place a hand at `target` (parent-local) with weight + character.
+ *   geo  = { pU, pL, pH, restU, restL, restW?:[x,y,z], pole? }
+ *   opts = { style:'gentle'|'snap'|'linger'|'jam'|'timid', dur, arc, lead, snap,
+ *            twist, dwell, release, sink, pole, wristAim:[x,y,z] }  (opts override style)
+ */
+export class Place {
+  constructor(side, geo, target, opts = {}) {
+    const st = PLACE_STYLES[opts.style] || PLACE_STYLES.gentle;
+    this.p = Object.assign({}, st, opts);
+    this.side = side; this.geo = geo; this.target = target;
+    this.dur = this.p.dur; this.t = 0; this.done = false;
+    this.sign = side === 'left' ? 1 : -1;
+    this.up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
+    this.lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
+    this.sh = side === 'left' ? 'leftShoulder' : 'rightShoulder';
+    this.wr = side === 'left' ? 'leftHand' : 'rightHand';
+    this.restU = qFromEulerXYZ(geo.restU);
+    this.restL = qFromEulerXYZ(geo.restL);
+    this.restW = qFromEulerXYZ(geo.restW || ZERO3);
+    this.start = fkHand(geo.pU, geo.pL, geo.pH, this.restU, this.restL);   // rest hand pos = arc origin
+  }
+  apply(buf, ctx) {
+    if (this.done) return;
+    this.t += ctx.dt;
+    const p = this.t / this.dur;
+    if (p >= 1) { this.done = true; return; }
+    const P = this.p;
+    const tArrive = 0.45;
+    const tDwell = tArrive + Math.min(0.45, P.dwell);   // contact → dwell end
+
+    // reach weight: ease to 1 by arrival, hold through dwell, peel back to 0.
+    // release exponent grows with P.release → a slow, reluctant let-go (linger).
+    let w;
+    if (p < tArrive) w = Math.sin((p / tArrive) * (Math.PI / 2));
+    else if (p < tDwell) w = 1;
+    else w = 1 - Math.pow((p - tDwell) / (1 - tDwell), 1 + P.release * 2.5);
+    w = _c01(w);
+
+    // IK target: lerp start→target by reach weight, + a vertical lift arc
+    // (hand lifts off then settles down), + a brief downward sink at contact.
+    const tgt = [
+      this.start[0] + (this.target[0] - this.start[0]) * w,
+      this.start[1] + (this.target[1] - this.start[1]) * w,
+      this.start[2] + (this.target[2] - this.start[2]) * w,
+    ];
+    tgt[1] += P.arc * Math.sin(_c01(p / tDwell) * Math.PI);                 // lift arc
+    if (p >= tArrive && p < tDwell) tgt[1] -= P.sink * Math.sin(((p - tArrive) / (tDwell - tArrive)) * Math.PI);
+
+    // solve IK + optional forearm twist (ねじ込む), engaged from contact on
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgt, { pole: P.pole || this.geo.pole });
+    const tw = P.twist * _smooth(tArrive - 0.12, tArrive, p) * (p < 1 ? 1 : 0);
+    let lowerQ = sol.lowerQ;
+    if (tw) lowerQ = qMul(lowerQ, qFromAxisAngle([0, 1, 0], tw * 0.5 * this.sign));
+    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, w)));
+    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, lowerQ, w)));
+
+    // shoulder roll/swing: peaks DURING the swing, ~0 at contact so IK stays
+    // accurate where it matters. Roll forward + a little swing toward the target.
+    const swing = P.lead * Math.sin(_c01(p / tArrive) * Math.PI);
+    buf.add(this.sh, [-swing * 0.18, swing * 0.12 * this.sign, 0]);
+
+    // wrist: aim (finger direction, independent of the elbow) + snap flick at
+    // contact + the place-twist carried into the hand.
+    let wq = qMul(qFromEulerXYZ(P.wristAim || ZERO3), this.restW);
+    const snap = P.snap * Math.max(0, 1 - Math.abs(p - tArrive) / 0.06);     // sharp spike at contact
+    if (snap) wq = qMul(qFromAxisAngle([1, 0, 0], -snap * 0.5), wq);
+    if (tw) wq = qMul(qFromAxisAngle([0, 1, 0], tw * 0.6 * this.sign), wq);
+    buf.set(this.wr, qToEulerXYZ(wq));
+
+    // torso LEAD + counter-lean (the "型を回転" weight shift), enveloped on swing
+    buf.add('chest', [0, swing * 0.12 * this.sign, -swing * 0.05 * this.sign]);
+    buf.add('spine', [0, swing * 0.06 * this.sign, 0]);
+  }
+}
+
 // ------------------------------------------------------------------- scheduler
 
 /**
@@ -368,16 +483,22 @@ export class Reach {
  * the returned pose. One engine per avatar.
  */
 export class MotionEngine {
-  constructor() {
+  constructor(opts = {}) {
     this.idle = new NoiseIdle();
     this.emotion = new EmotionPose();
     this.actions = [];          // transient actions (gestures; later reach/gaze)
     this.constraints = [];      // post-pose passes: collision correction (Phase 4)
+    // BodyProfile seam (v0.3): per-avatar physical params (joint limits, mass,
+    // stiffness, bulk) that modulate every action — same intent, different body,
+    // different motion. Stored but UNUSED in v0.2; jointLimit clamping etc. hang
+    // off here later. The 'bulk' self-collider feeds the Phase 4 constraint pass.
+    this.body = opts.body || null;
     this._buf = new TargetBuffer();
     this.springs = {};          // bone → [Spring x3]
     for (const b of MANAGED) {
       const r = restOf(b);
-      this.springs[b] = [new Spring(2.4, 0.9, 0, r[0]), new Spring(2.4, 0.9, 0, r[1]), new Spring(2.4, 0.9, 0, r[2])];
+      const f = SPRING_F[b] || 2.4;
+      this.springs[b] = [new Spring(f, 0.9, 0, r[0]), new Spring(f, 0.9, 0, r[1]), new Spring(f, 0.9, 0, r[2])];
     }
   }
 

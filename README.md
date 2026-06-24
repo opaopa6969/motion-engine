@@ -30,14 +30,16 @@ vrm.update(dt);
 | **EmotionPose** | an emotion layer's micro-pose, weighted by its envelope |
 | **`Gesture`** | one-shot named gestures, layered (not overwriting) on top of idle |
 | **`Reach` + `solveTwoBone`** | analytic two-bone **IK** so a hand reaches an actual world point — the thing a fixed clip can't do |
+| **`Place`** (v0.2) | a weight-aware "place a tile" action: windup → torso/shoulder lead + gravity arc → contact (wrist snap + settle sink) → dwell → peel. Style presets make the SAME intent read as そっと置く / ねじ込む / ピシッ / なかなか離さない — the discard as body-language tell |
 
-All contributions composite into one per-bone target buffer; the springs smooth the result; a post-pose **constraint pass** is the seam for collision correction.
+All contributions composite into one per-bone target buffer; the springs smooth the result (a lead→lag chain gives overlap = weight); a post-pose **constraint pass** is the seam for collision correction.
 
 ## API
 
 - `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `syncFrom(pose)`, `addConstraint(fn)`.
 - `new Gesture(name, dur?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'`.
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host.
+- `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` override. Drives shoulder + wrist too.
 - `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — pure analytic IK.
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — forward kinematics (the IK round-trip check).
 - helpers: `Spring`, `MANAGED`, `REST`, `GESTURE_DUR`, `qFromEulerXYZ`, `qToEulerXYZ` (Euler uses three.js `'XYZ'` order).
