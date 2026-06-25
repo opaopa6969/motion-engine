@@ -245,8 +245,11 @@ export class Gesture {
     // ctx.gain (v0.4) = how BIG this body reacts (大袈裟さ). The host feeds a
     // per-avatar expressiveness here so a reserved character barely flinches and
     // a dramatic one recoils hard — the same gesture, different personality.
+    // Each scaled axis is clamped to a sane joint range (±2 rad) so gain can't
+    // blow a big gesture (a full fistPump is ~1.95) past anatomy into a spring
+    // explosion. Small gestures (recoil/nod) scale freely; big ones just cap.
     const g = ctx.gain != null ? Math.max(0.2, Math.min(2.5, ctx.gain)) : 1;
-    for (const b in d) buf.add(b, d[b], g);
+    for (const b in d) buf.add(b, [clamp(d[b][0] * g, -2, 2), clamp(d[b][1] * g, -2, 2), clamp(d[b][2] * g, -2, 2)]);
   }
 }
 
