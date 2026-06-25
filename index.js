@@ -186,8 +186,42 @@ const GESTURES = {
   fistPump: (e) => ({ rightUpperArm: [-e * 0.25, 0, e * 1.95] }),
   // shoulders drawn in (disappointment / sigh)
   slump: (e) => ({ leftUpperArm: [0, 0, -e * 0.22], rightUpperArm: [0, 0, e * 0.22] }),
+
+  // v0.3 ------------------------------------------------------------------
+  // startle: torso + head snap BACK, arms guard inward (surprise / 驚いてのけぞる)
+  recoil: (e) => ({
+    spine: [-e * 0.22, 0, 0], chest: [-e * 0.3, 0, 0], head: [-e * 0.34, 0, 0],
+    leftUpperArm: [-e * 0.25, 0, -e * 0.12], rightUpperArm: [-e * 0.25, 0, e * 0.12],
+  }),
+  // fold the forearms across the chest (skeptical / closed-off / 腕組み). Long
+  // dwell in the middle of the bell reads as "arms stay crossed" for a beat.
+  crossArms: (e) => ({
+    leftUpperArm: [-e * 0.45, 0, -e * 0.55], rightUpperArm: [-e * 0.45, 0, e * 0.55],
+    leftLowerArm: [0, -e * 1.4, 0], rightLowerArm: [0, e * 1.4, 0],
+    chest: [e * 0.05, 0, 0],
+  }),
+  // a single agreement nod — head dips down and back (相槌 / 頷き)
+  nod: (e) => ({ head: [e * 0.42, 0, 0] }),
+  // a quick "dunno" shrug — shoulders ride up, palms turn out, head tucks
+  shrug: (e) => ({
+    leftShoulder: [0, 0, e * 0.42], rightShoulder: [0, 0, -e * 0.42],
+    leftUpperArm: [0, 0, e * 0.2], rightUpperArm: [0, 0, -e * 0.2],
+    head: [e * 0.1, 0, 0],
+  }),
+  // lean the torso forward INTO the table — interest / pressing the read (体幹リード)
+  lean: (e) => ({ spine: [e * 0.2, 0, 0], chest: [e * 0.17, 0, 0], head: [-e * 0.05, 0, 0] }),
+  // a knowing head tilt + roll — smirk body language (したり顔 / 首をかしげる)
+  smirkTilt: (e) => ({ head: [-e * 0.05, e * 0.18, e * 0.3] }),
+  // a heavy breath out: chest deflates, head dips, shoulders ease down (落胆のため息)
+  sigh: (e) => ({ chest: [e * 0.14, 0, 0], spine: [e * 0.07, 0, 0], head: [e * 0.13, 0, 0], leftUpperArm: [0, 0, -e * 0.1], rightUpperArm: [0, 0, e * 0.1] }),
+  // tension leaving the body — shoulders drop, chest softens (安堵の息抜き)
+  exhale: (e) => ({ chest: [e * 0.07, 0, 0], leftUpperArm: [0, 0, -e * 0.14], rightUpperArm: [0, 0, e * 0.14], head: [e * 0.05, 0, 0] }),
 };
-export const GESTURE_DUR = Object.freeze({ tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5 });
+export const GESTURE_DUR = Object.freeze({
+  tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5,
+  recoil: 0.9, crossArms: 1.8, nod: 1.0, shrug: 1.2, lean: 1.5, smirkTilt: 1.4,
+  sigh: 1.6, exhale: 1.4,
+});
 
 export class Gesture {
   constructor(name, dur) {

@@ -2,7 +2,7 @@
 // browser), is deterministic, and produces a sane plain-data Pose.
 //   node test.mjs    (or: npm test)
 import {
-  MotionEngine, Gesture, Spring, MANAGED, REST,
+  MotionEngine, Gesture, Spring, MANAGED, REST, GESTURE_DUR,
   Reach, Place, PLACE_STYLES, solveTwoBone, fkHand, qFromEulerXYZ, qToEulerXYZ,
 } from './index.js';
 
@@ -207,6 +207,55 @@ function runPlace(target, opts, secs = 2.2) {
   const a = run(), b = run(); let same = true;
   for (let i = 0; i < a.length; i++) for (let k = 0; k < 3; k++) if (a[i][k] !== b[i][k]) same = false;
   ok(same, 'Place is deterministic');
+}
+
+// --- v0.3: richer one-shot gestures ----------------------------------------
+
+// 17) every new gesture is registered (has a duration) and is a known function
+{
+  const v03 = ['recoil', 'crossArms', 'nod', 'shrug', 'lean', 'smirkTilt', 'sigh', 'exhale'];
+  let allDur = true, allFn = true;
+  for (const name of v03) {
+    if (!(GESTURE_DUR[name] > 0)) allDur = false;
+    if (new Gesture(name).done) allFn = false;   // ctor sets done=true when the fn is missing
+  }
+  ok(allDur, 'all v0.3 gestures have a duration');
+  ok(allFn, 'all v0.3 gestures resolve to a real function (not no-op)');
+}
+
+// 18) each new gesture actually MOVES its signature bone, then settles back
+{
+  // bone whose displacement from rest is the gesture's "tell"
+  const sig = { recoil: 'chest', crossArms: 'rightLowerArm', nod: 'head', shrug: 'rightShoulder', lean: 'spine', smirkTilt: 'head' };
+  const axis = { recoil: 0, crossArms: 1, nod: 0, shrug: 2, lean: 0, smirkTilt: 2 };
+  let allMoved = true, allSettled = true;
+  for (const name of Object.keys(sig)) {
+    const bone = sig[name], ax = axis[name];
+    const rest = (REST[bone] || [0, 0, 0])[ax];
+    const trace = run(() => new Gesture(name));
+    let peak = 0; for (const p of trace) peak = Math.max(peak, Math.abs(p[bone][ax] - rest));
+    const settled = Math.abs(trace[trace.length - 1][bone][ax] - rest);
+    if (peak < 0.12) { allMoved = false; console.error('    ' + name + ' barely moved (peak=' + peak.toFixed(3) + ')'); }
+    if (settled > 0.06) { allSettled = false; console.error('    ' + name + ' did not settle (residual=' + settled.toFixed(3) + ')'); }
+  }
+  ok(allMoved, 'every v0.3 gesture visibly moves its signature bone');
+  ok(allSettled, 'every v0.3 gesture settles back to rest when done');
+}
+
+// 19) crossArms folds BOTH forearms inward (left −Y, right +Y past rest)
+{
+  const trace = run(() => new Gesture('crossArms'));
+  let lMin = 9, rMax = -9;
+  for (const p of trace) { lMin = Math.min(lMin, p.leftLowerArm[1]); rMax = Math.max(rMax, p.rightLowerArm[1]); }
+  ok(lMin < REST.leftLowerArm[1] - 0.3 && rMax > REST.rightLowerArm[1] + 0.3, 'crossArms bends both forearms across the chest');
+}
+
+// 20) the new gestures are deterministic (no Math.random)
+{
+  const a = run(() => new Gesture('recoil')), b = run(() => new Gesture('recoil'));
+  let same = true;
+  for (let i = 0; i < a.length; i++) for (const bone of MANAGED) for (let k = 0; k < 3; k++) if (a[i][bone][k] !== b[i][bone][k]) same = false;
+  ok(same, 'v0.3 gestures are deterministic');
 }
 
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
