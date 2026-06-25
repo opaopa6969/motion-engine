@@ -36,7 +36,7 @@ All contributions composite into one per-bone target buffer; the springs smooth 
 
 ## API
 
-- `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `syncFrom(pose)`, `addConstraint(fn)`.
+- `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `syncFrom(pose)`, `addConstraint(fn)`. `ctx.gain` (v0.4, default 1, clamped 0.2–2.5) scales one-shot gesture amplitude — the per-avatar 大袈裟さ.
 - `new Gesture(name, dur?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` and (v0.3) `'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`.
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host.
 - `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` override. Drives shoulder + wrist too.
@@ -62,7 +62,7 @@ Headless: deterministic pose stream, spring stability, gesture settle, and `IK �
 
 ## Status
 
-Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action. **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. Roadmap: events→action wiring (host), collision-correction constraint pass (pairs with xpbd-body M3 self-collision).
+Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action. **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). Roadmap: collision-correction constraint pass (pairs with xpbd-body M3 self-collision).
 
 ## License
 

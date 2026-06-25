@@ -188,10 +188,13 @@ const GESTURES = {
   slump: (e) => ({ leftUpperArm: [0, 0, -e * 0.22], rightUpperArm: [0, 0, e * 0.22] }),
 
   // v0.3 ------------------------------------------------------------------
-  // startle: torso + head snap BACK, arms guard inward (surprise / 驚いてのけぞる)
+  // startle: torso + head snap BACK hard, arms fly up to guard (surprise /
+  // のけぞる). Amplitude is deliberately big — ctx.gain dials it per character,
+  // so even ×0.5 (a reserved type) still reads, and ×1.5 is full slapstick.
   recoil: (e) => ({
-    spine: [-e * 0.22, 0, 0], chest: [-e * 0.3, 0, 0], head: [-e * 0.34, 0, 0],
-    leftUpperArm: [-e * 0.25, 0, -e * 0.12], rightUpperArm: [-e * 0.25, 0, e * 0.12],
+    spine: [-e * 0.32, 0, 0], chest: [-e * 0.46, 0, 0], head: [-e * 0.55, 0, 0],
+    leftUpperArm: [-e * 0.5, 0, -e * 0.3], rightUpperArm: [-e * 0.5, 0, e * 0.3],
+    leftLowerArm: [0, -e * 0.4, 0], rightLowerArm: [0, e * 0.4, 0],
   }),
   // fold the forearms across the chest (skeptical / closed-off / 腕組み). Long
   // dwell in the middle of the bell reads as "arms stay crossed" for a beat.
@@ -238,7 +241,11 @@ export class Gesture {
     if (p >= 1) { this.done = true; return; }
     const e = Math.sin(Math.min(1, p) * Math.PI);   // 0 → 1 → 0
     const d = this.fn(e, p);
-    for (const b in d) buf.add(b, d[b]);
+    // ctx.gain (v0.4) = how BIG this body reacts (大袈裟さ). The host feeds a
+    // per-avatar expressiveness here so a reserved character barely flinches and
+    // a dramatic one recoils hard — the same gesture, different personality.
+    const g = ctx.gain != null ? Math.max(0.2, Math.min(2.5, ctx.gain)) : 1;
+    for (const b in d) buf.add(b, d[b], g);
   }
 }
 

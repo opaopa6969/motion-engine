@@ -258,6 +258,26 @@ function runPlace(target, opts, secs = 2.2) {
   ok(same, 'v0.3 gestures are deterministic');
 }
 
+// 21) ctx.gain (v0.4) scales gesture amplitude — big vs reserved reactions
+{
+  const peakChest = (gain) => {
+    const eng = new MotionEngine();
+    eng.play(new Gesture('recoil'));
+    const dt = 1 / 60; let mx = 0;
+    for (let i = 0; i < 90; i++) {
+      const ctx = { t: i * dt, phase: 0, pose: {}, poseW: 0 };
+      if (gain != null) ctx.gain = gain;
+      const p = eng.update(dt, ctx);
+      mx = Math.max(mx, Math.abs(p.chest[0]));
+    }
+    return mx;
+  };
+  const lo = peakChest(0.5), mid = peakChest(1), hi = peakChest(2);
+  ok(hi > mid * 1.4 && mid > lo * 1.4, `gain scales gesture amplitude (0.5→${lo.toFixed(3)} 1→${mid.toFixed(3)} 2→${hi.toFixed(3)})`);
+  ok(Math.abs(peakChest(null) - mid) < 1e-9, 'no gain == gain 1 (back-compatible default)');
+  ok(Math.abs(peakChest(99) - peakChest(2.5)) < 1e-9, 'gain is clamped (≤2.5)');
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
