@@ -188,13 +188,14 @@ const GESTURES = {
   slump: (e) => ({ leftUpperArm: [0, 0, -e * 0.22], rightUpperArm: [0, 0, e * 0.22] }),
 
   // v0.3 ------------------------------------------------------------------
-  // startle: torso + head snap BACK hard, arms fly up to guard (surprise /
-  // のけぞる). Amplitude is deliberately big — ctx.gain dials it per character,
-  // so even ×0.5 (a reserved type) still reads, and ×1.5 is full slapstick.
+  // startle: torso + head snap BACK, arms lift to guard (surprise / のけぞる).
+  // Tuned so gain 1 reads as a clear flinch and the host's upper gain (~1.7)
+  // stays a natural recoil without the springs overshooting into a back-flip.
+  // ctx.gain dials it per character (reserved ×0.4 … dramatic ×1.7).
   recoil: (e) => ({
-    spine: [-e * 0.32, 0, 0], chest: [-e * 0.46, 0, 0], head: [-e * 0.55, 0, 0],
-    leftUpperArm: [-e * 0.5, 0, -e * 0.3], rightUpperArm: [-e * 0.5, 0, e * 0.3],
-    leftLowerArm: [0, -e * 0.4, 0], rightLowerArm: [0, e * 0.4, 0],
+    spine: [-e * 0.16, 0, 0], chest: [-e * 0.26, 0, 0], head: [-e * 0.36, 0, 0],
+    leftUpperArm: [-e * 0.3, 0, -e * 0.18], rightUpperArm: [-e * 0.3, 0, e * 0.18],
+    leftLowerArm: [0, -e * 0.22, 0], rightLowerArm: [0, e * 0.22, 0],
   }),
   // fold the forearms across the chest (skeptical / closed-off / 腕組み). Long
   // dwell in the middle of the bell reads as "arms stay crossed" for a beat.
