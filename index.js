@@ -186,8 +186,46 @@ const GESTURES = {
   fistPump: (e) => ({ rightUpperArm: [-e * 0.25, 0, e * 1.95] }),
   // shoulders drawn in (disappointment / sigh)
   slump: (e) => ({ leftUpperArm: [0, 0, -e * 0.22], rightUpperArm: [0, 0, e * 0.22] }),
+
+  // v0.3 ------------------------------------------------------------------
+  // startle: torso + head snap BACK, arms lift to guard (surprise / のけぞる).
+  // Tuned so gain 1 reads as a clear flinch and the host's upper gain (~1.7)
+  // stays a natural recoil without the springs overshooting into a back-flip.
+  // ctx.gain dials it per character (reserved ×0.4 … dramatic ×1.7).
+  recoil: (e) => ({
+    spine: [-e * 0.16, 0, 0], chest: [-e * 0.26, 0, 0], head: [-e * 0.36, 0, 0],
+    leftUpperArm: [-e * 0.3, 0, -e * 0.18], rightUpperArm: [-e * 0.3, 0, e * 0.18],
+    leftLowerArm: [0, -e * 0.22, 0], rightLowerArm: [0, e * 0.22, 0],
+  }),
+  // fold the forearms across the chest (skeptical / closed-off / 腕組み). Long
+  // dwell in the middle of the bell reads as "arms stay crossed" for a beat.
+  crossArms: (e) => ({
+    leftUpperArm: [-e * 0.45, 0, -e * 0.55], rightUpperArm: [-e * 0.45, 0, e * 0.55],
+    leftLowerArm: [0, -e * 1.4, 0], rightLowerArm: [0, e * 1.4, 0],
+    chest: [e * 0.05, 0, 0],
+  }),
+  // a single agreement nod — head dips down and back (相槌 / 頷き)
+  nod: (e) => ({ head: [e * 0.42, 0, 0] }),
+  // a quick "dunno" shrug — shoulders ride up, palms turn out, head tucks
+  shrug: (e) => ({
+    leftShoulder: [0, 0, e * 0.42], rightShoulder: [0, 0, -e * 0.42],
+    leftUpperArm: [0, 0, e * 0.2], rightUpperArm: [0, 0, -e * 0.2],
+    head: [e * 0.1, 0, 0],
+  }),
+  // lean the torso forward INTO the table — interest / pressing the read (体幹リード)
+  lean: (e) => ({ spine: [e * 0.2, 0, 0], chest: [e * 0.17, 0, 0], head: [-e * 0.05, 0, 0] }),
+  // a knowing head tilt + roll — smirk body language (したり顔 / 首をかしげる)
+  smirkTilt: (e) => ({ head: [-e * 0.05, e * 0.18, e * 0.3] }),
+  // a heavy breath out: chest deflates, head dips, shoulders ease down (落胆のため息)
+  sigh: (e) => ({ chest: [e * 0.14, 0, 0], spine: [e * 0.07, 0, 0], head: [e * 0.13, 0, 0], leftUpperArm: [0, 0, -e * 0.1], rightUpperArm: [0, 0, e * 0.1] }),
+  // tension leaving the body — shoulders drop, chest softens (安堵の息抜き)
+  exhale: (e) => ({ chest: [e * 0.07, 0, 0], leftUpperArm: [0, 0, -e * 0.14], rightUpperArm: [0, 0, e * 0.14], head: [e * 0.05, 0, 0] }),
 };
-export const GESTURE_DUR = Object.freeze({ tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5 });
+export const GESTURE_DUR = Object.freeze({
+  tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5,
+  recoil: 0.9, crossArms: 1.8, nod: 1.0, shrug: 1.2, lean: 1.5, smirkTilt: 1.4,
+  sigh: 1.6, exhale: 1.4,
+});
 
 export class Gesture {
   constructor(name, dur) {
@@ -204,7 +242,14 @@ export class Gesture {
     if (p >= 1) { this.done = true; return; }
     const e = Math.sin(Math.min(1, p) * Math.PI);   // 0 → 1 → 0
     const d = this.fn(e, p);
-    for (const b in d) buf.add(b, d[b]);
+    // ctx.gain (v0.4) = how BIG this body reacts (大袈裟さ). The host feeds a
+    // per-avatar expressiveness here so a reserved character barely flinches and
+    // a dramatic one recoils hard — the same gesture, different personality.
+    // Each scaled axis is clamped to a sane joint range (±2 rad) so gain can't
+    // blow a big gesture (a full fistPump is ~1.95) past anatomy into a spring
+    // explosion. Small gestures (recoil/nod) scale freely; big ones just cap.
+    const g = ctx.gain != null ? Math.max(0.2, Math.min(2.5, ctx.gain)) : 1;
+    for (const b in d) buf.add(b, [clamp(d[b][0] * g, -2, 2), clamp(d[b][1] * g, -2, 2), clamp(d[b][2] * g, -2, 2)]);
   }
 }
 
