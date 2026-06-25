@@ -27,25 +27,87 @@
 
 // ----------------------------------------------------------- managed skeleton
 
+// --------------------------------------------------------------- finger rig (v0.5)
+//
+// v0.5 adds the FINGERS so a hand can open, grip an object, hold it and let go —
+// the missing half of "reach in, grab a tile, carry it out and place it". Finger
+// flexion (curl toward the palm) is a single-axis rotation about local Z in the
+// normalized VRM rig; the sign flips per hand. Thumb opposes across the palm, so
+// it gets its own small blend. A VRM that lacks some finger bones simply has them
+// dropped by the renderer (getNormalizedBoneNode → null), so listing the full
+// VRM-1.0 set here is safe even for hands modeled with fewer joints.
+const FINGER_DEFS = [
+  ['Thumb', ['Metacarpal', 'Proximal', 'Distal']],          // thumb has no "Intermediate"
+  ['Index', ['Proximal', 'Intermediate', 'Distal']],
+  ['Middle', ['Proximal', 'Intermediate', 'Distal']],
+  ['Ring', ['Proximal', 'Intermediate', 'Distal']],
+  ['Little', ['Proximal', 'Intermediate', 'Distal']],
+];
+const FINGER_SIDES = ['left', 'right'];
+// per-segment curl gain (× the grip amount): the middle knuckle flexes most in a
+// fist, the fingertip least; the thumb metacarpal barely moves.
+const FLEX = { Metacarpal: 0.5, Proximal: 0.9, Intermediate: 1.15, Distal: 0.7 };
+// base curl sign per hand (about local Z). If a given rig curls the WRONG way,
+// flip it globally via gripPose's opts.flexSign (the host's one knob) rather than
+// touching these.
+const FLEX_SIGN = { left: 1, right: -1 };
+
+function _fingerBones() {
+  const out = [];
+  for (const side of FINGER_SIDES) {
+    for (const [f, segs] of FINGER_DEFS) for (const s of segs) out.push(`${side}${f}${s}`);
+  }
+  return out;
+}
+export const FINGER_BONES = Object.freeze(_fingerBones());
+
+/**
+ * Finger pose for one hand at a given grip amount.
+ *   curl  0 = open/straight, ~1 = firm grip (a flat tile sits in a ~0.9 curl;
+ *         clenching past 1 is a fist). Non-thumb fingers flex about local Z;
+ *         the thumb adds a small opposition (Y) so it closes ACROSS the palm.
+ *   opts.flexSign  global ±1 flip if a rig's fingers bend backward (host knob).
+ * Returns plain Euler-per-bone data {bone:[x,y,z]} the engine/host applies.
+ */
+export function gripPose(side, curl, opts = {}) {
+  const fs = opts.flexSign != null ? opts.flexSign : 1;
+  const s = fs * (FLEX_SIGN[side] || 1);
+  const out = {};
+  for (const [f, segs] of FINGER_DEFS) {
+    if (f === 'Thumb') continue;
+    for (const seg of segs) out[`${side}${f}${seg}`] = [0, 0, s * curl * FLEX[seg]];
+  }
+  // thumb: curls less and rolls in toward the palm to oppose the fingers
+  out[`${side}ThumbMetacarpal`] = [0, -s * curl * 0.30, s * curl * 0.20];
+  out[`${side}ThumbProximal`] = [0, -s * curl * 0.20, s * curl * 0.40];
+  out[`${side}ThumbDistal`] = [0, 0, s * curl * 0.45];
+  return out;
+}
+
 // The humanoid bones this framework drives. v0.2: shoulders (clavicle) and hands
 // (wrist) join so the reach chain is shoulder→upperArm→lowerArm→hand — letting
 // the shoulder roll/swing and the wrist aim/snap/twist independently of the
-// elbow. Bones a given VRM lacks (clavicle is OPTIONAL in VRM) are simply
-// dropped by the renderer, so listing them here is safe. Fingers: v0.3.
+// elbow. v0.5: the finger bones join for grip. Bones a given VRM lacks (clavicle
+// is OPTIONAL in VRM; some hands have fewer finger joints) are simply dropped by
+// the renderer, so listing them here is safe.
 export const MANAGED = Object.freeze([
   'spine', 'chest', 'head',
   'leftShoulder', 'leftUpperArm', 'leftLowerArm', 'leftHand',
   'rightShoulder', 'rightUpperArm', 'rightLowerArm', 'rightHand',
+  ...FINGER_BONES,
 ]);
 
 // Relaxed resting pose — the single source of truth for the host's rest pose.
 // Brings the A/T-pose arms down to the sides. Bones absent here rest at
 // identity [0,0,0].
+const REST_FINGER_CURL = 0.14;   // a relaxed hand rests with a faint curl, not a flat board
 export const REST = Object.freeze({
   leftUpperArm: [0, 0, 1.2],
   rightUpperArm: [0, 0, -1.2],
   leftLowerArm: [0, -0.3, 0],
   rightLowerArm: [0, 0.3, 0],
+  ...gripPose('left', REST_FINGER_CURL),
+  ...gripPose('right', REST_FINGER_CURL),
 });
 const ZERO3 = [0, 0, 0];
 const restOf = (bone) => REST[bone] || ZERO3;
@@ -60,6 +122,9 @@ const SPRING_F = {
   leftLowerArm: 2.3, rightLowerArm: 2.3,
   leftHand: 1.9, rightHand: 1.9,
 };
+// fingers are light + quick — a crisp open/close that settles fast (snappier than
+// the arm chain so the grip reads as a deliberate grab, not a slow droop).
+for (const b of FINGER_BONES) SPRING_F[b] = 4.2;
 
 // ------------------------------------------------------------- spring dynamics
 
@@ -515,6 +580,141 @@ export class Place {
     // torso LEAD + counter-lean (the "型を回転" weight shift), enveloped on swing
     buf.add('chest', [0, swing * 0.12 * this.sign, -swing * 0.05 * this.sign]);
     buf.add('spine', [0, swing * 0.06 * this.sign, 0]);
+  }
+}
+
+// ------------------------------------------------------------------- grip (v0.5)
+//
+// Two finger primitives layered on the arm. `Grip` is the standalone open/close
+// envelope (drive a hand on its own); `Pick` is the full discard gesture — reach
+// INTO the own hand, close the fingers on a tile, sweep it out and release it
+// over the river — one continuous timeline so it reads as a single grab→place,
+// not two disconnected motions. The host supplies both targets in the upper-arm
+// parent-local frame (same convention as Reach/Place) and follows the hand bone
+// to carry the actual tile mesh.
+
+/**
+ * A standalone finger open/close envelope. `keys` are [p, curl] control points
+ * over the action's life (p in 0..1); curl is smoothstep-interpolated. The
+ * applied finger curl is base + curl*span, so the resting hand (base) stays
+ * natural and a full grab approaches `base+span`.
+ *   new Grip('right', { dur, keys:[[0,0],[0.4,1],[0.8,1],[1,0]], flexSign })
+ */
+export class Grip {
+  constructor(side, opts = {}) {
+    this.side = side;
+    this.dur = opts.dur || 1.0;
+    this.keys = opts.keys || [[0, 0], [1, 1]];
+    this.flexSign = opts.flexSign;
+    this.base = opts.base != null ? opts.base : REST_FINGER_CURL;
+    this.span = opts.span != null ? opts.span : 0.82;
+    this.t = 0; this.done = false;
+  }
+  curlAt(p) {
+    const k = this.keys;
+    if (p <= k[0][0]) return k[0][1];
+    for (let i = 1; i < k.length; i++) {
+      if (p <= k[i][0]) {
+        const a = k[i - 1], b = k[i];
+        const u = _c01((p - a[0]) / ((b[0] - a[0]) || 1e-6));
+        return a[1] + (b[1] - a[1]) * (u * u * (3 - 2 * u));
+      }
+    }
+    return k[k.length - 1][1];
+  }
+  apply(buf, ctx) {
+    if (this.done) return;
+    this.t += ctx.dt;
+    const p = this.t / this.dur;
+    if (p >= 1) { this.done = true; return; }
+    const c = this.base + this.curlAt(p) * this.span;
+    const gp = gripPose(this.side, c, { flexSign: this.flexSign });
+    for (const b in gp) buf.set(b, gp[b]);
+  }
+}
+
+// ------------------------------------------------------------------- pick (v0.5)
+//
+// The full discard as ONE action: rest → reach into the own hand → fingers close
+// (grab) → sweep out over the river with a gravity arc → fingers open (release) →
+// retract to rest. Drives the arm IK (shoulder/upperArm/lowerArm/wrist), the
+// torso lead, and the finger grip together. `style` reuses the Place presets for
+// the "manner" (gentle/snap/linger/jam/timid) of the placement half.
+
+/**
+ * @param geo  { pU, pL, pH, restU, restL, restW?, pole? } (measured from the rig)
+ * @param opts { grab:[x,y,z], place:[x,y,z], dur?, style?, flexSign?, + Place overrides }
+ *   grab/place are targets in the upper-arm PARENT-LOCAL frame.
+ */
+export class Pick {
+  constructor(side, geo, opts = {}) {
+    const st = PLACE_STYLES[opts.style] || PLACE_STYLES.gentle;
+    this.p = Object.assign({}, st, opts);
+    this.side = side; this.geo = geo;
+    this.grab = opts.grab || [0, 0, 0];
+    this.place = opts.place || [0, 0, 0];
+    this.dur = opts.dur || 2.1; this.t = 0; this.done = false;
+    this.flexSign = opts.flexSign;
+    this.sign = side === 'left' ? 1 : -1;
+    this.up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
+    this.lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
+    this.sh = side === 'left' ? 'leftShoulder' : 'rightShoulder';
+    this.wr = side === 'left' ? 'leftHand' : 'rightHand';
+    this.restU = qFromEulerXYZ(geo.restU);
+    this.restL = qFromEulerXYZ(geo.restL);
+    this.restW = qFromEulerXYZ(geo.restW || ZERO3);
+    this.start = fkHand(geo.pU, geo.pL, geo.pH, this.restU, this.restL);   // rest hand pos
+  }
+  // phase fractions (of dur): arrive-at-grab, grip-closed/sweep-start,
+  // arrive-at-place, released → retract.
+  get _ph() { return { A: 0.26, B: 0.40, C: 0.74, D: 0.84 }; }
+  apply(buf, ctx) {
+    if (this.done) return;
+    this.t += ctx.dt;
+    const p = this.t / this.dur;
+    if (p >= 1) { this.done = true; return; }
+    const P = this.p; const { A, B, C, D } = this._ph;
+    const lerp3 = (u, v, w) => [u[0] + (v[0] - u[0]) * w, u[1] + (v[1] - u[1]) * w, u[2] + (v[2] - u[2]) * w];
+
+    // hand IK target + how fully the arm is extended (rest→IK blend)
+    let pos, reachW;
+    if (p < A) {                                   // rest → grab (into the own hand)
+      const w = Math.sin((p / A) * (Math.PI / 2));
+      pos = lerp3(this.start, this.grab, w); reachW = w;
+    } else if (p < C) {                            // dwell at grab (A..B), then sweep grab → place
+      const wb = p < B ? 0 : _smooth(B, C, p);
+      pos = lerp3(this.grab, this.place, wb); reachW = 1;
+      pos[1] += P.arc * Math.sin(_c01((p - A) / (C - A)) * Math.PI);   // gravity lift arc over the sweep
+    } else {                                       // place → retract to rest
+      const w = Math.sin(_c01((p - C) / (1 - C)) * (Math.PI / 2));
+      pos = lerp3(this.place, this.start, w); reachW = 1 - w;
+    }
+    if (p >= C - 0.05 && p < D) pos[1] -= P.sink * Math.sin(((p - (C - 0.05)) / (D - (C - 0.05))) * Math.PI);  // settle sink
+
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, pos, { pole: P.pole || this.geo.pole });
+    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, reachW)));
+    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, sol.lowerQ, reachW)));
+
+    // shoulder + torso lead peak mid-sweep (the weight shift carrying the tile out)
+    const swing = P.lead * Math.sin(_c01((p - A) / (C - A)) * Math.PI);
+    buf.add(this.sh, [-swing * 0.16, swing * 0.10 * this.sign, 0]);
+    buf.add('chest', [0, swing * 0.10 * this.sign, -swing * 0.04 * this.sign]);
+    buf.add('spine', [0, swing * 0.05 * this.sign, 0]);
+
+    // wrist: aim + a release flick at let-go, faded with reach so it returns home
+    let wq = qMul(qFromEulerXYZ(P.wristAim || ZERO3), this.restW);
+    const snap = P.snap * Math.max(0, 1 - Math.abs(p - D) / 0.06);
+    if (snap) wq = qMul(qFromAxisAngle([1, 0, 0], -snap * 0.4), wq);
+    buf.set(this.wr, qToEulerXYZ(qSlerp(this.restW, wq, reachW)));
+
+    // grip: open on approach → close to grab by B → hold through the sweep →
+    // open to release at D. Curl rides on the resting curl so it eases home.
+    let grab;
+    if (p < B) grab = _smooth(A - 0.06, B, p);
+    else if (p < D) grab = 1;
+    else grab = 1 - _smooth(D, D + 0.08, p);
+    const gp = gripPose(this.side, REST_FINGER_CURL + grab * 0.80, { flexSign: this.flexSign });
+    for (const b in gp) buf.set(b, gp[b]);
   }
 }
 

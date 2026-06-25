@@ -4,6 +4,7 @@
 import {
   MotionEngine, Gesture, Spring, MANAGED, REST, GESTURE_DUR,
   Reach, Place, PLACE_STYLES, solveTwoBone, fkHand, qFromEulerXYZ, qToEulerXYZ,
+  Grip, Pick, gripPose, FINGER_BONES,
 } from './index.js';
 
 const D = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -276,6 +277,77 @@ function runPlace(target, opts, secs = 2.2) {
   ok(hi > mid * 1.4 && mid > lo * 1.4, `gain scales gesture amplitude (0.5→${lo.toFixed(3)} 1→${mid.toFixed(3)} 2→${hi.toFixed(3)})`);
   ok(Math.abs(peakChest(null) - mid) < 1e-9, 'no gain == gain 1 (back-compatible default)');
   ok(Math.abs(peakChest(99) - peakChest(2.5)) < 1e-9, 'gain is clamped (≤2.5)');
+}
+
+// --- v0.5: fingers — grip + Pick (grab a tile, carry it out, place it) -------
+
+// 22) finger bones joined the managed rig and the engine emits them, finite
+{
+  const want = ['leftIndexProximal', 'rightThumbDistal', 'leftLittleIntermediate', 'rightMiddleProximal'];
+  ok(want.every((b) => MANAGED.includes(b)), 'finger bones are in MANAGED');
+  const last = run()[120];
+  ok(want.every((b) => last[b] && finite(last[b])), 'engine emits finite finger poses');
+}
+
+// 23) gripPose: a closed grip curls the fingers; open ≈ straight; sign flips per hand
+{
+  const open = gripPose('right', 0);
+  const closed = gripPose('right', 1);
+  const openCurl = Math.abs(open.rightIndexProximal[2]);
+  const closedCurl = Math.abs(closed.rightIndexProximal[2]);
+  ok(openCurl < 1e-9, 'gripPose(0) leaves the finger straight');
+  ok(closedCurl > 0.5, 'gripPose(1) curls the finger toward the palm');
+  ok(Math.sign(gripPose('left', 1).leftIndexProximal[2]) === -Math.sign(closed.rightIndexProximal[2]),
+    'left/right fingers curl with opposite Z sign');
+  ok(Math.sign(gripPose('right', 1, { flexSign: -1 }).rightIndexProximal[2]) === -Math.sign(closedCurl ? closed.rightIndexProximal[2] : 1),
+    'flexSign flips the curl direction (host knob)');
+}
+
+// 24) Grip envelope opens → closes → opens per its keyframes
+{
+  const eng = new MotionEngine();
+  eng.play(new Grip('right', { dur: 1.0, keys: [[0, 0], [0.4, 1], [0.7, 1], [1, 0]] }));
+  const dt = 1 / 60; const curl = [];
+  for (let i = 0; i < 60; i++) curl.push(Math.abs(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 }).rightMiddleProximal[2]));
+  const mid = curl[Math.floor(0.55 * 60)];      // gripping
+  ok(mid > curl[2] + 0.2 && mid > curl[58] + 0.2, 'Grip closes mid-envelope and reopens by the end');
+}
+
+// 25) Pick: arm reaches grab→place AND the fingers close on the way (one motion)
+{
+  const grab = [REST_HAND[0] - 0.05, REST_HAND[1] + 0.06, REST_HAND[2] + 0.10];   // into the own hand
+  const place = [REST_HAND[0] + 0.10, REST_HAND[1] - 0.04, REST_HAND[2] + 0.02];  // out over the river
+  const eng = new MotionEngine();
+  eng.play(new Pick('right', GEO, { grab, place, style: 'gentle', dur: 2.0 }));
+  const dt = 1 / 60; const trace = [];
+  for (let i = 0; i < 132; i++) trace.push(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 }));
+  let nearGrab = 1e9, nearPlace = 1e9, maxCurl = 0, endCurl = 0;
+  trace.forEach((pose, i) => {
+    const hand = handAt(pose);
+    nearGrab = Math.min(nearGrab, D(hand, grab));
+    if (i > 60) nearPlace = Math.min(nearPlace, D(hand, place));   // place is reached in the 2nd half
+    const c = Math.abs(pose.rightMiddleProximal[2]);
+    maxCurl = Math.max(maxCurl, c);
+    endCurl = c;
+  });
+  ok(nearGrab < 0.06, 'Pick reaches into the own hand (grab, err=' + nearGrab.toFixed(4) + ')');
+  ok(nearPlace < 0.06, 'Pick carries the hand out to the river (place, err=' + nearPlace.toFixed(4) + ')');
+  ok(maxCurl > 0.5, 'Pick closes the fingers to grip the tile');
+  ok(endCurl < maxCurl - 0.2, 'Pick reopens the fingers to release at the river');
+}
+
+// 26) Pick + Grip are deterministic
+{
+  const trace = () => {
+    const eng = new MotionEngine();
+    eng.play(new Pick('right', GEO, { grab: [REST_HAND[0], REST_HAND[1] + 0.05, REST_HAND[2] + 0.08], place: [REST_HAND[0] + 0.1, REST_HAND[1], REST_HAND[2]], dur: 1.6 }));
+    const dt = 1 / 60; const out = [];
+    for (let i = 0; i < 96; i++) out.push(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 }).rightIndexProximal.slice());
+    return out;
+  };
+  const a = trace(), b = trace(); let same = true;
+  for (let i = 0; i < a.length; i++) for (let k = 0; k < 3; k++) if (a[i][k] !== b[i][k]) same = false;
+  ok(same, 'Pick is deterministic');
 }
 
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);

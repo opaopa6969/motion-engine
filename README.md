@@ -31,6 +31,7 @@ vrm.update(dt);
 | **`Gesture`** | one-shot named gestures, layered (not overwriting) on top of idle |
 | **`Reach` + `solveTwoBone`** | analytic two-bone **IK** so a hand reaches an actual world point — the thing a fixed clip can't do |
 | **`Place`** (v0.2) | a weight-aware "place a tile" action: windup → torso/shoulder lead + gravity arc → contact (wrist snap + settle sink) → dwell → peel. Style presets make the SAME intent read as そっと置く / ねじ込む / ピシッ / なかなか離さない — the discard as body-language tell |
+| **`Grip` + `Pick`** (v0.5) | fingers. `Grip` is an open/close envelope; `Pick` is the whole discard as ONE motion — reach INTO the own hand, fingers close on a tile, sweep it out over the river with a gravity arc, fingers open to release, retract. Drives arm IK + torso + the finger curl together |
 
 All contributions composite into one per-bone target buffer; the springs smooth the result (a lead→lag chain gives overlap = weight); a post-pose **constraint pass** is the seam for collision correction.
 
@@ -40,9 +41,12 @@ All contributions composite into one per-bone target buffer; the springs smooth 
 - `new Gesture(name, dur?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` and (v0.3) `'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`.
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host.
 - `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` override. Drives shoulder + wrist too.
+- `new Grip(side, opts?)` — (v0.5) standalone finger open/close. `opts = { dur, keys:[[p,curl],…], flexSign, base, span }`; curl 0 = open, 1 = grip. `keys` are smoothstep-interpolated control points.
+- `new Pick(side, geo, opts)` — (v0.5) the full discard in one timeline: reach into the own hand → fingers close → sweep out → fingers open → retract. `opts = { grab:[x,y,z], place:[x,y,z], dur?, style?, flexSign?, …Place overrides }`; `grab`/`place` are targets in the upper-arm parent-local frame. The host follows the hand bone each frame to carry the tile mesh.
+- `gripPose(side, curl, opts?)` → `{ bone:[x,y,z] }` — finger Euler for a grip amount. `opts.flexSign` (±1) globally flips curl direction for a rig that bends the wrong way.
 - `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — pure analytic IK.
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — forward kinematics (the IK round-trip check).
-- helpers: `Spring`, `MANAGED`, `REST`, `GESTURE_DUR`, `qFromEulerXYZ`, `qToEulerXYZ` (Euler uses three.js `'XYZ'` order).
+- helpers: `Spring`, `MANAGED`, `REST`, `FINGER_BONES`, `GESTURE_DUR`, `qFromEulerXYZ`, `qToEulerXYZ` (Euler uses three.js `'XYZ'` order).
 
 ## Use via CDN (no build step)
 
