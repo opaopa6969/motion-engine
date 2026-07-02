@@ -308,11 +308,65 @@ const GESTURES = {
   sigh: (e) => ({ chest: [e * 0.14, 0, 0], spine: [e * 0.07, 0, 0], head: [e * 0.13, 0, 0], leftUpperArm: [0, 0, -e * 0.1], rightUpperArm: [0, 0, e * 0.1] }),
   // tension leaving the body — shoulders drop, chest softens (安堵の息抜き)
   exhale: (e) => ({ chest: [e * 0.07, 0, 0], leftUpperArm: [0, 0, -e * 0.14], rightUpperArm: [0, 0, e * 0.14], head: [e * 0.05, 0, 0] }),
+
+  // v0.10 — the ACTING library (所作). Axis conventions measured on real
+  // T-pose-normalized rigs (arm bones along ±X): forearm FLEXION toward the
+  // biceps is +z right / −z left; horizontal forward swing is +y right / −y
+  // left; upperArm −x pitches the arm forward, ±z raises it laterally.
+  // ------------------------------------------------------------------------
+  // 拍手 — both hands brought together in front of the chest, palms tapping on
+  // a beat. Replaces the retarget-broken external clip that crossed the arms.
+  clap: (e, p) => {
+    // tap together/apart — slow & wide enough to survive the spring smoothing
+    const beat = Math.sin(p * Math.PI * 4) * 0.4 * e;
+    return {
+      rightUpperArm: [-e * 0.95, 0, e * 0.32], leftUpperArm: [-e * 0.95, 0, -e * 0.32],
+      rightLowerArm: [0, e * 0.55, e * 1.15 + beat], leftLowerArm: [0, -e * 0.55, -e * 1.15 - beat],
+      head: [e * 0.06, 0, 0], chest: [e * 0.04, 0, 0],
+    };
+  },
+  // ガッツポーズ — both fists clenched at the shoulders, chest up, a tight shake
+  gutsPose: (e, p) => {
+    const shake = Math.sin(p * Math.PI * 5) * 0.07 * e;
+    return {
+      rightUpperArm: [-e * 0.35 + shake, 0, e * 0.55], leftUpperArm: [-e * 0.35 + shake, 0, -e * 0.55],
+      rightLowerArm: [0, 0, e * 1.9], leftLowerArm: [0, 0, -e * 1.9],
+      chest: [-e * 0.09, 0, 0], head: [-e * 0.12, 0, 0],
+      ...gripPose('right', e * 0.7), ...gripPose('left', e * 0.7),
+    };
+  },
+  // 万歳 — both arms thrown up (clamp-capped ≈ 45° above horizontal), chin up
+  banzai: (e) => ({
+    rightUpperArm: [0, 0, e * 2.0], leftUpperArm: [0, 0, -e * 2.0],
+    rightLowerArm: [0, 0, e * 0.25], leftLowerArm: [0, 0, -e * 0.25],
+    head: [-e * 0.18, 0, 0], chest: [-e * 0.08, 0, 0],
+  }),
+  // 放銃の悔しさ — head drops, the right fist comes up to the forehead
+  fistToForehead: (e) => ({
+    head: [e * 0.38, 0, 0], spine: [e * 0.07, 0, 0], chest: [e * 0.08, 0, 0],
+    rightUpperArm: [-e * 0.45, 0, e * 1.45], rightLowerArm: [0, 0, e * 1.95],
+    ...gripPose('right', e * 0.75),
+  }),
+  // やれやれ — head down, slowly shaking side to side, shoulders drawn in
+  headShakeRue: (e, p) => ({
+    head: [e * 0.3, Math.sin(p * Math.PI * 4) * 0.24 * e, 0],
+    chest: [e * 0.06, 0, 0],
+    leftUpperArm: [0, 0, -e * 0.12], rightUpperArm: [0, 0, e * 0.12],
+  }),
+  // 長考の頬杖 — head tilts onto the right hand at the cheek, the left forearm
+  // folds across the belly to cup the right elbow
+  ponder: (e) => ({
+    head: [e * 0.1, e * 0.08, e * 0.24],
+    rightUpperArm: [-e * 0.3, 0, e * 1.3], rightLowerArm: [0, 0, e * 1.92],
+    leftUpperArm: [-e * 0.28, 0, -e * 0.12], leftLowerArm: [0, -e * 1.25, 0],
+    chest: [e * 0.05, 0, 0],
+  }),
 };
 export const GESTURE_DUR = Object.freeze({
   tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5,
   recoil: 0.9, crossArms: 1.8, nod: 1.0, shrug: 1.2, lean: 1.5, smirkTilt: 1.4,
   sigh: 1.6, exhale: 1.4,
+  clap: 2.0, gutsPose: 1.7, banzai: 1.5, fistToForehead: 2.3, headShakeRue: 2.2, ponder: 3.6,
 });
 
 // Anticipation + follow-through envelope for a one-shot swing. A real body
@@ -346,6 +400,12 @@ export function swingEnv(p, opts) {
 const GESTURE_ENV = {
   headScratch: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
   crossArms: { anticipate: 0.08, overshoot: 0.05 },   // folded forearms: keep the reverse sway subtle
+  // the v0.10 acting set is flexion-heavy — no negative phases (no 逆反り)
+  clap: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
+  gutsPose: { windup: 0, anticipate: 0, follow: 0.12, overshoot: 0.05 },
+  banzai: { windup: 0.1, anticipate: 0.08, follow: 0.12, overshoot: 0.05 },  // a small crouch before the throw reads well
+  fistToForehead: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.03 },
+  ponder: { windup: 0, anticipate: 0, follow: 0.08, overshoot: 0.02 },
 };
 
 export class Gesture {
