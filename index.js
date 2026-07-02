@@ -260,10 +260,15 @@ class EmotionPose {
 const GESTURES = {
   // reach to the wall, draw, set a tile down
   tsumogiri: (e) => ({ rightUpperArm: [-e * 1.05, 0, e * 0.45], rightLowerArm: [0, e * 0.25, 0] }),
-  // right hand up to the head, small wiggle
+  // right hand up to the SIDE of the head, scratching. The forearm folds on its
+  // natural FLEXION axis (+z on the T-pose-normalized rig, toward the biceps);
+  // the old -y fold swung the hand around BEHIND the back on a real rig, which
+  // read as a backward-bending elbow whenever the idle self-action fired.
+  // Numbers fitted by FK against a real VRM (hand lands ~7cm off the head side).
   headScratch: (e, p) => ({
-    rightUpperArm: [-e * 0.35, 0, e * 1.35],
-    rightLowerArm: [0, -e * 1.7 + Math.sin(p * Math.PI * 7) * 0.18 * e, 0],
+    rightUpperArm: [0, 0, e * 1.95],
+    rightLowerArm: [0, 0, e * 1.82 + Math.sin(p * Math.PI * 7) * 0.14 * e],
+    head: [0, 0, -e * 0.08],                       // a small sympathetic tilt
   }),
   // thrust the right fist upward (joy)
   fistPump: (e) => ({ rightUpperArm: [-e * 0.25, 0, e * 1.95] }),
@@ -333,12 +338,22 @@ export function swingEnv(p, opts) {
   return Math.sin(q * Math.PI);
 }
 
+// Per-gesture swing-envelope defaults. The generic windup/overshoot swings a
+// gesture NEGATIVE of its delta — fine for sways and nods, but a gesture whose
+// delta is elbow FLEXION would anticipate by HYPEREXTENDING the joint (逆反り).
+// Flexion-dominant gestures opt out of the negative phases here; a caller's
+// explicit `env` still wins.
+const GESTURE_ENV = {
+  headScratch: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
+  crossArms: { anticipate: 0.08, overshoot: 0.05 },   // folded forearms: keep the reverse sway subtle
+};
+
 export class Gesture {
   constructor(name, dur, env) {
     this.name = name;
     this.dur = dur || GESTURE_DUR[name] || 1.0;
     this.fn = GESTURES[name];
-    this.env = env;                                  // anticipation/follow tuning (undefined = defaults)
+    this.env = env || GESTURE_ENV[name];             // anticipation/follow tuning (undefined = defaults)
     this.t = 0;
     this.done = !this.fn;
   }

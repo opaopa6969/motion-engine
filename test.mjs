@@ -569,6 +569,26 @@ function runPlace(target, opts, secs = 2.2) {
   ok(minClear(true) > capsule.r - 0.02, 'the constraint lifts the whole forearm out of the capsule');
 }
 
+// 35) headScratch is anatomical: the forearm folds on the natural flexion axis
+//     (+z, toward the biceps) and NEVER hyperextends (z < 0 = 逆反り) at any
+//     gain — the old -y fold read as a backward-bending elbow on real rigs.
+{
+  for (const gain of [1, 1.7]) {
+    const eng = new MotionEngine();
+    eng.play(new Gesture('headScratch'));
+    const dt = 1 / 60; let minZ = 9, maxZ = -9, maxUp = -9;
+    for (let i = 0; i < Math.ceil(2.3 * 60); i++) {
+      const p = eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0, gain });
+      minZ = Math.min(minZ, p.rightLowerArm[2]);
+      maxZ = Math.max(maxZ, p.rightLowerArm[2]);
+      maxUp = Math.max(maxUp, p.rightUpperArm[2]);
+    }
+    ok(minZ > -0.08, `headScratch never hyperextends the elbow (gain ${gain}, minZ=${minZ.toFixed(3)})`);
+    ok(maxZ > 1.4, `headScratch folds the forearm toward the head (gain ${gain})`);
+    ok(maxUp > REST.rightUpperArm[2] + 1.4, `headScratch raises the arm (gain ${gain})`);
+  }
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
