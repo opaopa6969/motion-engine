@@ -309,49 +309,8 @@ const GESTURES = {
   // tension leaving the body — shoulders drop, chest softens (安堵の息抜き)
   exhale: (e) => ({ chest: [e * 0.07, 0, 0], leftUpperArm: [0, 0, -e * 0.14], rightUpperArm: [0, 0, e * 0.14], head: [e * 0.05, 0, 0] }),
 
-  // v0.10 — the ACTING library (所作). Axis conventions MEASURED on a real
-  // T-pose-normalized rig (arm bones along ±X; empirical Jacobian probe):
-  // forearm FLEXION toward the biceps is +z right / −z left; horizontal
-  // forward swing is +y right / −y left; upperArm +x pitches the arm FORWARD
-  // (yes, positive — the raw retarget flips the naive sign), ±z raises it
-  // laterally (+z right / −z left).
-  // ------------------------------------------------------------------------
-  // 拍手 — both hands brought together in front of the chest, palms tapping on
-  // a beat. Replaces the retarget-broken external clip that crossed the arms.
-  clap: (e, p) => {
-    // hands meet in front of the CHEST (elbows down, not a full forward reach —
-    // numbers verified on a real rig: hold gap ≈0.37, chest height). The one-
-    // sided beat folds the forearms deeper so the palms TAP into contact and
-    // release — a readable clap cycle that survives the spring smoothing.
-    const tap = Math.max(0, Math.sin(p * Math.PI * 4)) * 0.4 * e;
-    return {
-      rightUpperArm: [e * 1.15, 0, -e * 0.65], leftUpperArm: [e * 1.15, 0, e * 0.65],
-      rightLowerArm: [0, -e * 1.6 - tap, e * 0.3], leftLowerArm: [0, e * 1.6 + tap, -e * 0.3],
-      head: [e * 0.06, 0, 0], chest: [e * 0.04, 0, 0],
-    };
-  },
-  // ガッツポーズ — both fists clenched at the shoulders, chest up, a tight shake
-  gutsPose: (e, p) => {
-    const shake = Math.sin(p * Math.PI * 5) * 0.07 * e;
-    return {
-      rightUpperArm: [-e * 0.35 + shake, 0, e * 0.55], leftUpperArm: [-e * 0.35 + shake, 0, -e * 0.55],
-      rightLowerArm: [0, 0, e * 1.9], leftLowerArm: [0, 0, -e * 1.9],
-      chest: [-e * 0.09, 0, 0], head: [-e * 0.12, 0, 0],
-      ...gripPose('right', e * 0.7), ...gripPose('left', e * 0.7),
-    };
-  },
-  // 万歳 — both arms thrown up (clamp-capped ≈ 45° above horizontal), chin up
-  banzai: (e) => ({
-    rightUpperArm: [0, 0, e * 2.0], leftUpperArm: [0, 0, -e * 2.0],
-    rightLowerArm: [0, 0, e * 0.25], leftLowerArm: [0, 0, -e * 0.25],
-    head: [-e * 0.18, 0, 0], chest: [-e * 0.08, 0, 0],
-  }),
-  // 放銃の悔しさ — head drops, the right fist comes up to the forehead
-  fistToForehead: (e) => ({
-    head: [e * 0.38, 0, 0], spine: [e * 0.07, 0, 0], chest: [e * 0.08, 0, 0],
-    rightUpperArm: [e * 0.5, 0, e * 1.3], rightLowerArm: [0, 0, e * 1.95],
-    ...gripPose('right', e * 0.75),
-  }),
+  // (v0.11: the arm-bearing acts clap/gutsPose/banzai/fistToForehead/ponder
+  // moved to ARM_ACTS — IK-driven, pole-guaranteed elbows. See ArmAct below.)
   // やれやれ — head down, slowly shaking side to side, shoulders drawn in
   headShakeRue: (e, p) => ({
     head: [e * 0.3, Math.sin(p * Math.PI * 4) * 0.24 * e, 0],
@@ -371,7 +330,7 @@ export const GESTURE_DUR = Object.freeze({
   tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5,
   recoil: 0.9, crossArms: 1.8, nod: 1.0, shrug: 1.2, lean: 1.5, smirkTilt: 1.4,
   sigh: 1.6, exhale: 1.4,
-  clap: 2.0, gutsPose: 1.7, banzai: 1.5, fistToForehead: 2.3, headShakeRue: 2.2, ponder: 3.6,
+  clap: 2.0, gutsPose: 1.8, banzai: 1.6, fistToForehead: 2.3, headShakeRue: 2.2, ponder: 3.6,
 });
 
 // Anticipation + follow-through envelope for a one-shot swing. A real body
@@ -412,6 +371,128 @@ const GESTURE_ENV = {
   fistToForehead: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.03 },
   ponder: { windup: 0, anticipate: 0, follow: 0.08, overshoot: 0.02 },
 };
+
+// ------------------------------------------------------------- arm acts (v0.11)
+//
+// ACTING BY INTENT, not by joint angles. Euler-delta gestures broke down for
+// arms — multi-axis coordination through a raw retarget is unauthorable (a
+// "clap" fitted on hand position alone met the hands via BACKWARD-BENT elbows,
+// because nothing constrained the hinge). ArmAct drives the arms through the
+// same machinery as Reach/Place: a HAND TARGET + a POLE (where the elbow
+// points — anatomically guaranteed by the solver) + a wrist orientation + a
+// finger curl. Targets are rig-independent: UNITS OF ARM LENGTH from the
+// shoulder, along a host-measured BASIS {out, up, front} (unit vectors in the
+// upper-arm parent-local frame; out = away from the body on that arm's side).
+// The host measures geo once; the spec says WHAT the pose is, IK does the joints.
+//
+//   geo.right/left = { pU, pL, pH, restU, restL, restW?, flexSign?,
+//                      basis: { out:[..], up:[..], front:[..] } }
+export const ARM_ACTS = {
+  // 拍手 — palms meet in front of the chest, tapping together on a beat
+  clap: {
+    dur: 2.0, env: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
+    bones: (e) => ({ head: [e * 0.06, 0, 0], chest: [e * 0.05, 0, 0] }),
+    right: (e, p) => ({ at: [-0.04 - Math.max(0, Math.sin(p * Math.PI * 6)) * 0.05, -0.12, 0.5], pole: [0.5, -1, 0.15], curl: 0.1 }),
+    left: (e, p) => ({ at: [-0.04 - Math.max(0, Math.sin(p * Math.PI * 6)) * 0.05, -0.12, 0.5], pole: [0.5, -1, 0.15], curl: 0.1 }),
+  },
+  // ガッツポーズ — the cinema-celebration meme: both fists pumped up beside the
+  // head, elbows out, chest/head thrown back, a tight victorious shake
+  gutsPose: {
+    dur: 1.8, env: { windup: 0.08, anticipate: 0.1, follow: 0.12, overshoot: 0.05 },
+    bones: (e) => ({ chest: [-e * 0.16, 0, 0], head: [-e * 0.2, 0, 0], spine: [-e * 0.06, 0, 0] }),
+    right: (e, p) => ({ at: [0.38, 0.44 + Math.sin(p * Math.PI * 7) * 0.05, 0.22], pole: [1, -0.5, 0], curl: 0.85 }),
+    left: (e, p) => ({ at: [0.38, 0.44 + Math.sin(p * Math.PI * 7) * 0.05, 0.22], pole: [1, -0.5, 0], curl: 0.85 }),
+  },
+  // 万歳 — both arms thrown high (IK has no axis clamp: FULL range), chin up
+  banzai: {
+    dur: 1.6, env: { windup: 0.12, anticipate: 0.12, follow: 0.12, overshoot: 0.06 },
+    bones: (e) => ({ head: [-e * 0.22, 0, 0], chest: [-e * 0.1, 0, 0] }),
+    right: (e) => ({ at: [0.25, 0.9, 0.18], pole: [1, -0.15, 0], curl: 0.15 }),
+    left: (e) => ({ at: [0.25, 0.9, 0.18], pole: [1, -0.15, 0], curl: 0.15 }),
+  },
+  // 放銃の悔しさ — head drops, the right FIST comes up to the forehead
+  fistToForehead: {
+    dur: 2.3, env: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.03 },
+    bones: (e) => ({ head: [e * 0.4, 0, 0], spine: [e * 0.08, 0, 0], chest: [e * 0.09, 0, 0] }),
+    right: (e) => ({ at: [-0.02, 0.22, 0.3], pole: [1, -0.55, 0], curl: 0.85, wrist: [0, 0, -0.5] }),
+  },
+  // 長考の頬杖 — head tilts onto the right hand at the cheek; the left forearm
+  // folds across the belly, palm under the right elbow
+  ponder: {
+    dur: 3.6, env: { windup: 0, anticipate: 0, follow: 0.08, overshoot: 0.02 },
+    bones: (e) => ({ head: [e * 0.1, e * 0.08, e * 0.24], chest: [e * 0.05, 0, 0] }),
+    right: (e) => ({ at: [-0.06, 0.26, 0.2], pole: [1, -0.7, 0], curl: 0.3 }),
+    left: (e) => ({ at: [-0.3, -0.12, 0.3], pole: [1, -0.9, 0], curl: 0.25 }),
+  },
+};
+
+export class ArmAct {
+  /**
+   * @param name  key into ARM_ACTS
+   * @param geo   { right?, left? } — per-side rig geometry incl. basis (host-measured)
+   * @param dur   optional duration override
+   */
+  constructor(name, geo, dur) {
+    this.name = name;
+    this.spec = ARM_ACTS[name];
+    this.geo = geo || {};
+    this.dur = dur || (this.spec && this.spec.dur) || 1.5;
+    this.t = 0;
+    this.done = !this.spec;
+    this._prep = {};
+    for (const side of ['right', 'left']) {
+      const g = this.geo[side];
+      if (!g || !this.spec || !this.spec[side]) continue;
+      const L = vlen(g.pL) + vlen(g.pH);
+      this._prep[side] = {
+        g, L,
+        restU: qFromEulerXYZ(g.restU), restL: qFromEulerXYZ(g.restL),
+        restW: qFromEulerXYZ(g.restW || ZERO3),
+        up: side === 'left' ? 'leftUpperArm' : 'rightUpperArm',
+        lo: side === 'left' ? 'leftLowerArm' : 'rightLowerArm',
+        wr: side === 'left' ? 'leftHand' : 'rightHand',
+      };
+    }
+  }
+  _vec(g, c) {                                    // basis combo → parent-local vector
+    const B = g.basis;
+    return [
+      c[0] * B.out[0] + c[1] * B.up[0] + c[2] * B.front[0],
+      c[0] * B.out[1] + c[1] * B.up[1] + c[2] * B.front[1],
+      c[0] * B.out[2] + c[1] * B.up[2] + c[2] * B.front[2],
+    ];
+  }
+  apply(buf, ctx) {
+    if (this.done) return;
+    this.t += ctx.dt;
+    const p = this.t / this.dur;
+    if (p >= 1) { this.done = true; return; }
+    const e = swingEnv(p, this.spec.env);
+    const w = clamp(Math.abs(e), 0, 1);           // rest→IK engagement
+    if (this.spec.bones) {
+      const d = this.spec.bones(e, p);
+      const gs = ctx.gain != null ? Math.max(0.2, Math.min(2.5, ctx.gain)) : 1;
+      for (const b in d) buf.add(b, [clamp(d[b][0] * gs, -2.9, 2.9), clamp(d[b][1] * gs, -2.9, 2.9), clamp(d[b][2] * gs, -2.9, 2.9)]);
+    }
+    for (const side of ['right', 'left']) {
+      const pr = this._prep[side];
+      if (!pr) continue;
+      const s = this.spec[side](e, p);
+      const g = pr.g;
+      const off = this._vec(g, [s.at[0] * pr.L, s.at[1] * pr.L, s.at[2] * pr.L]);
+      const target = [g.pU[0] + off[0], g.pU[1] + off[1], g.pU[2] + off[2]];
+      const pole = this._vec(g, s.pole || [0.5, -1, 0]);
+      const sol = solveTwoBone(g.pU, g.pL, g.pH, pr.restU, pr.restL, target, { pole });
+      buf.set(pr.up, qToEulerXYZ(qSlerp(pr.restU, sol.upperQ, w)));
+      buf.set(pr.lo, qToEulerXYZ(qSlerp(pr.restL, sol.lowerQ, w)));
+      if (s.wrist) buf.set(pr.wr, qToEulerXYZ(qSlerp(pr.restW, qMul(qFromEulerXYZ(s.wrist), pr.restW), w)));
+      if (s.curl != null) {
+        const gp = gripPose(side, REST_FINGER_CURL + s.curl * w * 0.8, { flexSign: g.flexSign });
+        for (const b in gp) buf.set(b, gp[b]);
+      }
+    }
+  }
+}
 
 export class Gesture {
   constructor(name, dur, env) {

@@ -589,87 +589,93 @@ function runPlace(target, opts, secs = 2.2) {
   }
 }
 
-// --- v0.10: the acting library (所作) ----------------------------------------
+// --- v0.11: ArmAct — IK-driven acting (pole-guaranteed elbows) ---------------
 
-// 36) all v0.10 gestures are registered, move, and settle back to rest
+import { ArmAct, ARM_ACTS } from './index.js';
+const GEO_R = { pU: [0.06, 0, 0], pL: [0.26, 0, 0], pH: [0.24, 0, 0], restU: [0, 0, -1.2], restL: [0, 0.3, 0], basis: { out: [1, 0, 0], up: [0, 1, 0], front: [0, 0, 1] } };
+const GEO_L = { pU: [-0.06, 0, 0], pL: [-0.26, 0, 0], pH: [-0.24, 0, 0], restU: [0, 0, 1.2], restL: [0, -0.3, 0], basis: { out: [-1, 0, 0], up: [0, 1, 0], front: [0, 0, 1] } };
+const GEO_BOTH = { right: GEO_R, left: GEO_L };
+const handOf = (pose, side) => { const g = side === 'right' ? GEO_R : GEO_L; return fkHand(g.pU, g.pL, g.pH, qFromEulerXYZ(pose[side + 'UpperArm']), qFromEulerXYZ(pose[side + 'LowerArm'])); };
+const elbowOf = (pose, side) => { const g = side === 'right' ? GEO_R : GEO_L; const q = qFromEulerXYZ(pose[side + 'UpperArm']); return [g.pU[0] + (q[3]*2*(q[1]*g.pL[2]-q[2]*g.pL[1]) + g.pL[0] + (q[1]*(2*(q[0]*g.pL[1]-q[1]*g.pL[0]))-q[2]*(2*(q[2]*g.pL[0]-q[0]*g.pL[2])))), 0, 0]; };
+const runAct = (name, frames) => { const eng = new MotionEngine(); const a = new ArmAct(name, GEO_BOTH); eng.play(a); const out = []; for (let i = 0; i < frames; i++) out.push(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 })); return out; };
+
+// 36) every arm act runs, moves, and settles back to rest
 {
-  const v10 = ['clap', 'gutsPose', 'banzai', 'fistToForehead', 'headShakeRue', 'ponder'];
-  let allDur = true, allFn = true;
-  for (const n of v10) { if (!(GESTURE_DUR[n] > 0)) allDur = false; if (new Gesture(n).done) allFn = false; }
-  ok(allDur && allFn, 'all v0.10 gestures are registered');
-  const sig = { clap: ['rightLowerArm', 2], gutsPose: ['rightLowerArm', 2], banzai: ['rightUpperArm', 2], fistToForehead: ['head', 0], headShakeRue: ['head', 0], ponder: ['rightLowerArm', 2] };
-  let allMoved = true, allSettled = true;
-  for (const n of v10) {
-    const [bone, ax] = sig[n];
-    const rest = (REST[bone] || [0, 0, 0])[ax];
-    const eng = new MotionEngine(); eng.play(new Gesture(n));
-    const frames = Math.ceil((GESTURE_DUR[n] + 1.0) * 60);
-    let peak = 0, last = 0;
-    for (let i = 0; i < frames; i++) { const p = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }); peak = Math.max(peak, Math.abs(p[bone][ax] - rest)); last = Math.abs(p[bone][ax] - rest); }
-    if (peak < 0.15) { allMoved = false; console.error('    ' + n + ' barely moved'); }
-    if (last > 0.07) { allSettled = false; console.error('    ' + n + ' did not settle (' + last.toFixed(3) + ')'); }
+  let allSettled = true, allMoved = true;
+  for (const n of Object.keys(ARM_ACTS)) {
+    const tr = runAct(n, Math.ceil((ARM_ACTS[n].dur + 1.2) * 60));
+    let peak = 0;
+    for (const p of tr) peak = Math.max(peak, D(handOf(p, 'right'), handOf(tr[tr.length - 1], 'right')));
+    if (peak < 0.1) { allMoved = false; console.error('    ' + n + ' barely moved'); }
+    const last = tr[tr.length - 1];
+    const restHand = fkHand(GEO_R.pU, GEO_R.pL, GEO_R.pH, qFromEulerXYZ(GEO_R.restU), qFromEulerXYZ(GEO_R.restL));
+    if (D(handOf(last, 'right'), restHand) > 0.06) { allSettled = false; console.error('    ' + n + ' did not settle'); }
   }
-  ok(allMoved, 'every v0.10 gesture visibly moves its signature bone');
-  ok(allSettled, 'every v0.10 gesture settles back to rest');
+  ok(allMoved, 'every arm act visibly moves the hand');
+  ok(allSettled, 'every arm act settles back to rest');
 }
 
-// helper: the FLEXION component of a lowerArm rotation, via swing-twist about
-// the local Z hinge. The quat-space smoothing can emit an equivalent flipped
-// Euler (x±π …), so raw euler[2] is NOT a reliable hinge measure — the twist is.
-const flexZ = (euler) => {
-  const q = qFromEulerXYZ(euler);
-  let tw = 2 * Math.atan2(q[2], q[3]);          // twist about +Z
-  if (tw > Math.PI) tw -= 2 * Math.PI;
-  if (tw < -Math.PI) tw += 2 * Math.PI;
-  return tw;
-};
-
-// 37) anatomy: the flexion-heavy set NEVER hyperextends either elbow
-//     (right flexion is +z twist, left is −z; the wrong sign is 逆反り)
+// 37) clap: the hands MEET at the front, and BOTH elbows stay on the pole side
+//     (below the shoulder→hand line — the backward-fold is structurally gone)
 {
-  let minR = 9, maxL = -9;
-  for (const n of ['clap', 'gutsPose', 'banzai', 'fistToForehead', 'ponder']) {
-    const eng = new MotionEngine(); eng.play(new Gesture(n));
-    for (let i = 0; i < Math.ceil((GESTURE_DUR[n] + 0.5) * 60); i++) {
-      const p = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0, gain: 1.7 });
-      minR = Math.min(minR, flexZ(p.rightLowerArm));
-      maxL = Math.max(maxL, flexZ(p.leftLowerArm));
+  const tr = runAct('clap', Math.ceil(ARM_ACTS.clap.dur * 60));
+  let minHands = 9;
+  let poleOK = true;
+  for (let i = 30; i < tr.length - 20; i++) {
+    const hr = handOf(tr[i], 'right'), hl = handOf(tr[i], 'left');
+    minHands = Math.min(minHands, D(hr, hl));
+    for (const side of ['right', 'left']) {
+      const g = side === 'right' ? GEO_R : GEO_L;
+      const uq = qFromEulerXYZ(tr[i][side + 'UpperArm']);
+      const el = [g.pU[0], g.pU[1], g.pU[2]];
+      const pl2 = [g.pL[0], g.pL[1], g.pL[2]];
+      // elbow = pU + R(uq)·pL
+      const tx = 2 * (uq[1] * pl2[2] - uq[2] * pl2[1]), ty = 2 * (uq[2] * pl2[0] - uq[0] * pl2[2]), tz = 2 * (uq[0] * pl2[1] - uq[1] * pl2[0]);
+      const elbow = [el[0] + pl2[0] + uq[3] * tx + (uq[1] * tz - uq[2] * ty), el[1] + pl2[1] + uq[3] * ty + (uq[2] * tx - uq[0] * tz), el[2] + pl2[2] + uq[3] * tz + (uq[0] * ty - uq[1] * tx)];
+      const hand = handOf(tr[i], side);
+      const dir = vn(sub(hand, g.pU));
+      const off = sub(sub(elbow, g.pU), scl(dir, dot(sub(elbow, g.pU), dir)));
+      if (vl(off) > 0.02 && off[1] > 0.02) poleOK = false;   // elbow above the line = wrong side
     }
   }
-  ok(minR > -0.12, `v0.10 set never hyperextends the right elbow (minTwist=${minR.toFixed(3)})`);
-  ok(maxL < 0.12, `v0.10 set never hyperextends the left elbow (maxTwist=${maxL.toFixed(3)})`);
+  ok(minHands < 0.12, 'clap: hands meet at the front (minGap=' + minHands.toFixed(3) + ')');
+  ok(poleOK, 'clap: both elbows stay BELOW the shoulder→hand line (pole-guaranteed, no 逆折れ)');
 }
 
-// 38) clap actually beats: the forearm SWING (the meet axis, twist about Y)
-//     oscillates around its hold — palms tapping apart/together
+// 38) banzai: both hands rise well above the shoulders (full range via IK)
 {
-  const twistY = (euler) => { const q = qFromEulerXYZ(euler); let tw = 2 * Math.atan2(q[1], q[3]); if (tw > Math.PI) tw -= 2 * Math.PI; if (tw < -Math.PI) tw += 2 * Math.PI; return tw; };
-  const eng = new MotionEngine(); eng.play(new Gesture('clap'));
-  const z = [];
-  for (let i = 0; i < Math.ceil(GESTURE_DUR.clap * 60); i++) z.push(twistY(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }).rightLowerArm));
-  let flips = 0;
-  for (let i = 2; i < z.length; i++) { const d1 = z[i - 1] - z[i - 2], d2 = z[i] - z[i - 1]; if (d1 * d2 < 0 && Math.abs(d2) > 3e-4) flips++; }
-  // the QuatSpring attenuates the 2Hz tap heavily — one clear press cycle
-  // survives (visible softly); asserting presence, not count.
-  ok(flips >= 1, `clap taps on a beat (${flips} direction changes)`);
+  const tr = runAct('banzai', Math.ceil(ARM_ACTS.banzai.dur * 60));
+  let maxR = -9, maxL = -9;
+  for (const p of tr) { maxR = Math.max(maxR, handOf(p, 'right')[1]); maxL = Math.max(maxL, handOf(p, 'left')[1]); }
+  ok(maxR > 0.3 && maxL > 0.3, `banzai: hands thrown high (R=${maxR.toFixed(2)} L=${maxL.toFixed(2)})`);
 }
 
-// 39) headShakeRue: head pitches DOWN and yaw oscillates (やれやれ)
+// 39) gutsPose / fistToForehead clench the fist; ponder drives BOTH arms
+{
+  const peakCurl = (name) => { const tr = runAct(name, Math.ceil(ARM_ACTS[name].dur * 60)); let mx = 0; for (const p of tr) mx = Math.max(mx, Math.abs(p.rightIndexProximal[2])); return mx; };
+  ok(peakCurl('gutsPose') > 0.4, 'gutsPose clenches the fists');
+  ok(peakCurl('fistToForehead') > 0.4, 'fistToForehead clenches the fist');
+  const tr = runAct('ponder', Math.ceil(ARM_ACTS.ponder.dur * 60));
+  let movedL = 0;
+  const restL = fkHand(GEO_L.pU, GEO_L.pL, GEO_L.pH, qFromEulerXYZ(GEO_L.restU), qFromEulerXYZ(GEO_L.restL));
+  for (const p of tr) movedL = Math.max(movedL, D(handOf(p, 'left'), restL));
+  ok(movedL > 0.1, 'ponder moves the left arm too (肘受け)');
+}
+
+// 40) headShakeRue (still euler — head only): pitches down + oscillates yaw
 {
   const eng = new MotionEngine(); eng.play(new Gesture('headShakeRue'));
   let maxPitch = -9, yFlips = 0; const ys = [];
   for (let i = 0; i < Math.ceil(GESTURE_DUR.headShakeRue * 60); i++) { const p = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }); maxPitch = Math.max(maxPitch, p.head[0]); ys.push(p.head[1]); }
   for (let i = 2; i < ys.length; i++) { const d1 = ys[i - 1] - ys[i - 2], d2 = ys[i] - ys[i - 1]; if (d1 * d2 < 0 && Math.abs(d2) > 1e-4) yFlips++; }
-  ok(maxPitch > 0.18, 'headShakeRue drops the head (うつむき)');
-  ok(yFlips >= 3, `headShakeRue shakes the head (${yFlips} yaw direction changes)`);
+  ok(maxPitch > 0.18 && yFlips >= 3, `headShakeRue drops + shakes the head (${yFlips} flips)`);
 }
 
-// 40) gutsPose/fistToForehead clench the fist; ponder uses BOTH arms
+// 41) arm acts are deterministic
 {
-  const peakOf = (name, bone, ax) => { const eng = new MotionEngine(); eng.play(new Gesture(name)); let mx = 0; for (let i = 0; i < Math.ceil(GESTURE_DUR[name] * 60); i++) { const p = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }); mx = Math.max(mx, Math.abs(p[bone][ax] - (REST[bone] || [0, 0, 0])[ax])); } return mx; };
-  ok(peakOf('gutsPose', 'rightIndexProximal', 2) > 0.3, 'gutsPose clenches the right fist');
-  ok(peakOf('fistToForehead', 'rightIndexProximal', 2) > 0.3, 'fistToForehead clenches the fist');
-  ok(peakOf('ponder', 'rightLowerArm', 2) > 1.2 && peakOf('ponder', 'leftLowerArm', 1) > 0.8, 'ponder folds the right hand to the cheek AND the left forearm across');
+  const a = runAct('gutsPose', 60).map((p) => p.rightUpperArm.join(','));
+  const b2 = runAct('gutsPose', 60).map((p) => p.rightUpperArm.join(','));
+  ok(a.join('|') === b2.join('|'), 'ArmAct is deterministic');
 }
 
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
