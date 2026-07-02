@@ -486,18 +486,27 @@ class QuatSpring {
   setParams(f, zeta) { const wn = 2 * Math.PI * f; this.kp = wn * wn; this.kd = 2 * zeta * wn; }
   update(dt, qT) {
     if (!(dt > 0)) return this.q;
-    const h = dt < 0.1 ? dt : 0.1;                        // clamp huge frame gaps (tab refocus)
+    // SUBSTEP so the stiffness term stays stable no matter how big the frame gap
+    // is. A single large step (a dropped frame / a slow headless render at ~5fps)
+    // lets kp·e·h fling the orientation past the target and the arm flips; small
+    // fixed substeps keep each kp·e·h tiny. At 60fps this is exactly one step
+    // (h = 1/60), so normal playback is unchanged. Huge gaps are clamped first.
+    let rem = dt < 0.25 ? dt : 0.25;                      // cap catastrophic gaps (tab refocus)
+    const n = Math.min(32, Math.max(1, Math.ceil(rem / (1 / 60))));
+    const h = rem / n;
     let t = qT;
     if (this.q[0] * qT[0] + this.q[1] * qT[1] + this.q[2] * qT[2] + this.q[3] * qT[3] < 0) {
-      t = [-qT[0], -qT[1], -qT[2], -qT[3]];               // shortest path
+      t = [-qT[0], -qT[1], -qT[2], -qT[3]];               // shortest path (constant target over the gap)
     }
-    const e = qLog(qNorm(qMul(t, qConj(this.q))));        // error rotation vector
-    for (let i = 0; i < 3; i++) {
-      // semi-implicit in the damping term → unconditionally stable for any h
-      this.w[i] = (this.w[i] + h * this.kp * e[i]) / (1 + h * this.kd);
-      if (this.w[i] > 60) this.w[i] = 60; else if (this.w[i] < -60) this.w[i] = -60;
+    for (let s = 0; s < n; s++) {
+      const e = qLog(qNorm(qMul(t, qConj(this.q))));      // error rotation vector
+      for (let i = 0; i < 3; i++) {
+        // semi-implicit in the damping term → unconditionally stable for any h
+        this.w[i] = (this.w[i] + h * this.kp * e[i]) / (1 + h * this.kd);
+        if (this.w[i] > 60) this.w[i] = 60; else if (this.w[i] < -60) this.w[i] = -60;
+      }
+      this.q = qNorm(qMul(qExp([this.w[0] * h, this.w[1] * h, this.w[2] * h]), this.q));
     }
-    this.q = qNorm(qMul(qExp([this.w[0] * h, this.w[1] * h, this.w[2] * h]), this.q));
     return this.q;
   }
   reset(e0) { this.q = qNorm(qFromEulerXYZ(e0)); this.w = [0, 0, 0]; }
