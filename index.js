@@ -319,13 +319,14 @@ const GESTURES = {
   // 拍手 — both hands brought together in front of the chest, palms tapping on
   // a beat. Replaces the retarget-broken external clip that crossed the arms.
   clap: (e, p) => {
-    // palms MEET in front (numbers quasi-Newton-fitted on a real rig: hands
-    // land 3cm apart); the beat rides the forearm swing so they tap apart/
-    // together. Slow & wide enough to survive the spring smoothing.
-    const beat = Math.sin(p * Math.PI * 6) * 0.35 * e;
+    // hands meet in front of the CHEST (elbows down, not a full forward reach —
+    // numbers verified on a real rig: hold gap ≈0.37, chest height). The one-
+    // sided beat folds the forearms deeper so the palms TAP into contact and
+    // release — a readable clap cycle that survives the spring smoothing.
+    const tap = Math.max(0, Math.sin(p * Math.PI * 4)) * 0.4 * e;
     return {
-      rightUpperArm: [e * 1.85, 0, -e * 0.66], leftUpperArm: [e * 1.85, 0, e * 0.66],
-      rightLowerArm: [0, -e * 0.91 + beat, e * 0.23], leftLowerArm: [0, e * 0.91 - beat, -e * 0.23],
+      rightUpperArm: [e * 1.15, 0, -e * 0.65], leftUpperArm: [e * 1.15, 0, e * 0.65],
+      rightLowerArm: [0, -e * 1.6 - tap, e * 0.3], leftLowerArm: [0, e * 1.6 + tap, -e * 0.3],
       head: [e * 0.06, 0, 0], chest: [e * 0.04, 0, 0],
     };
   },
