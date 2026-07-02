@@ -118,6 +118,7 @@ const restOf = (bone) => REST[bone] || ZERO3;
 // passes `elbow` from here into new Reach/Place/Pick(...). Purely opt-in.
 export const DEFAULT_BODY = Object.freeze({
   elbow: Object.freeze([0.35, 2.95]),   // ≈20°..169°: never locked straight, never fully clenched
+  shoulder: 2.0,                        // upper arm stays within ~115° of its rest direction
 });
 
 // Per-bone spring frequency: a lead→lag CHAIN. Proximal bones are stiff/fast,
@@ -577,7 +578,18 @@ export function solveTwoBone(pU, pL, pH, restU, restL, target, opts = {}) {
   // law of cosines: interior angle at the shoulder between dir and the upper arm.
   const cosA = clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
   const angleA = Math.acos(cosA);
-  const aUnit = vadd(vscale(dir, Math.cos(angleA)), vscale(u, Math.sin(angleA)));  // upper-arm dir
+  let aUnit = vadd(vscale(dir, Math.cos(angleA)), vscale(u, Math.sin(angleA)));  // upper-arm dir
+  // shoulder cone (opt-in): keep the upper arm within `shoulder` radians of its
+  // rest direction. Beyond it, the arm can't swing further, so the hand stops
+  // short (anatomical) — we slerp the upper-arm DIRECTION back onto the cone and
+  // let the forearm still aim at the target from there.
+  if (opts.shoulder) {
+    const cAng = Math.acos(clamp(vdot(aUnit, restA), -1, 1));
+    if (cAng > opts.shoulder && cAng > 1e-4) {
+      const tt = opts.shoulder / cAng, s = Math.sin(cAng);
+      aUnit = vnorm(vadd(vscale(restA, Math.sin((1 - tt) * cAng) / s), vscale(aUnit, Math.sin(tt * cAng) / s)));
+    }
+  }
   const elbow = vadd(pU, vscale(aUnit, L1));
   const bUnit = vnorm(vsub(target, elbow));            // lower-arm dir (hand lands on target)
 
@@ -599,7 +611,7 @@ export class Reach {
   constructor(side, geo, target, dur = 1.2, opts = {}) {
     this.side = side; this.geo = geo; this.target = target;
     this.dur = dur; this.t = 0; this.done = false; this.pole = opts.pole;
-    this.elbow = opts.elbow;                        // optional [min,max] interior-angle limit
+    this.elbow = opts.elbow; this.shoulder = opts.shoulder;   // optional joint limits
     this.colliders = opts.colliders;                // optional obstacle set (array | () => array)
     this.margin = opts.margin || 0;
     this.hold = opts.hold || 0;                    // fraction of dur to dwell at full reach
@@ -620,7 +632,7 @@ export class Reach {
     else if (p > 0.5 + h) w = Math.sin(((1 - p) / (0.5 - h)) * (Math.PI / 2));
     else w = 1;
     const tgt = this.colliders ? projectOut(this.target, _cols(this.colliders), this.margin) : this.target;
-    const { upperQ, lowerQ } = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgt, { pole: this.pole, elbow: this.elbow });
+    const { upperQ, lowerQ } = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgt, { pole: this.pole, elbow: this.elbow, shoulder: this.shoulder });
     buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, upperQ, w)));
     buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, lowerQ, w)));
   }
@@ -715,7 +727,7 @@ export class Place {
     // solve IK + optional forearm twist (ねじ込む), engaged from contact on.
     // clamp the goal out of obstacles first so the hand rests ON the surface.
     const tgtC = this.colliders ? projectOut(tgt, _cols(this.colliders), this.margin) : tgt;
-    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgtC, { pole: P.pole || this.geo.pole, elbow: P.elbow });
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgtC, { pole: P.pole || this.geo.pole, elbow: P.elbow, shoulder: P.shoulder });
     const tw = P.twist * _smooth(tArrive - 0.12, tArrive, p) * (p < 1 ? 1 : 0);
     let lowerQ = sol.lowerQ;
     if (tw) lowerQ = qMul(lowerQ, qFromAxisAngle([0, 1, 0], tw * 0.5 * this.sign));
@@ -863,7 +875,7 @@ export class Pick {
 
     // keep the carrying hand out of obstacles (river tiles, the wall, the torso)
     if (this.colliders) pos = projectOut(pos, _cols(this.colliders), this.margin);
-    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, pos, { pole: P.pole || this.geo.pole, elbow: P.elbow });
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, pos, { pole: P.pole || this.geo.pole, elbow: P.elbow, shoulder: P.shoulder });
     const bw = reachW < 0 ? -reachW : reachW;    // engage IK by magnitude (windup goal is behind rest)
     buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, bw)));
     buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, sol.lowerQ, bw)));
@@ -959,15 +971,37 @@ export function projectOut(p, colliders, margin = 0, passes = 3) {
 // colliders may be a live array or a per-frame function (tiles fall, hands move)
 function _cols(c) { return typeof c === 'function' ? c() : c; }
 
+// The HAND displacement that lifts a whole SEGMENT (a bone, e.g. the forearm:
+// a=elbow fixed, b=hand) out of the colliders. Sample along it; a sample at
+// parameter t needs the hand to move by push/t to clear it (the segment pivots
+// about the fixed elbow, so a mid-forearm obstacle needs ~2× the hand move).
+// Returns the largest such hand displacement (null when the segment is clear).
+function _segPush(a, b, cols, margin, samples = 4) {
+  let best = null, bestNeed = 0;
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    const q = projectOut(p, cols, margin);
+    if (q !== p) {
+      const need = vlen(vsub(q, p)) / Math.max(t, 0.34);   // hand move to lift this sample out
+      if (need > bestNeed) { bestNeed = need; best = vscale(vnorm(vsub(q, p)), need); }
+    }
+  }
+  return best;
+}
+
 /**
  * Build a post-pose CONSTRAINT (for engine.addConstraint) that keeps an arm's
  * hand out of obstacles AFTER the springs have run — so it catches the residual
  * penetration a goal-clamp can't: the sprung hand LAGS its (already-clamped)
  * goal and can cut a corner through an obstacle mid-swing. This FK's the hand
  * from the produced pose, and if it's inside any collider, re-solves two-bone IK
- * to the pushed-out point and writes the corrected upper/lower Euler back. Pass
- * `colliders` as an array or a per-frame function; `geo` is the same measured
- * rig geometry the actions use ({ pU,pL,pH,restU,restL,pole?,elbow? }).
+ * to the pushed-out point and writes the corrected upper/lower Euler back. It
+ * corrects BOTH the hand point AND the forearm SEGMENT (elbow→hand), so a limb
+ * swept across the body is lifted off a torso capsule, not just the fingertip.
+ * Pass `colliders` as an array or a per-frame function; `geo` is the same
+ * measured rig geometry the actions use ({ pU,pL,pH,restU,restL,pole?,elbow?,
+ * shoulder? }).
  *   engine.addConstraint(makeArmConstraint({ side:'right', geo, colliders, margin }))
  */
 export function makeArmConstraint(opts) {
@@ -975,14 +1009,22 @@ export function makeArmConstraint(opts) {
   const up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
   const lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
   const restU = qFromEulerXYZ(geo.restU), restL = qFromEulerXYZ(geo.restL);
+  const solveOpts = { pole: geo.pole, elbow: geo.elbow, shoulder: geo.shoulder };
   return function armConstraint(pose) {
     const cols = _cols(opts.colliders);
     if (!cols || !cols.length || !pose[up] || !pose[lo]) return;
     const uq = qFromEulerXYZ(pose[up]), lq = qFromEulerXYZ(pose[lo]);
+    const elbow = vadd(geo.pU, qApply(uq, geo.pL));
     const hand = fkHand(geo.pU, geo.pL, geo.pH, uq, lq);
-    const fixed = projectOut(hand, cols, margin);
-    if (fixed === hand) return;                        // already clear — no correction
-    const sol = solveTwoBone(geo.pU, geo.pL, geo.pH, restU, restL, fixed, { pole: geo.pole, elbow: geo.elbow });
+    let fixed = projectOut(hand, cols, margin);        // 1) hand point out
+    let moved = fixed !== hand;
+    for (let pass = 0; pass < 2; pass++) {              // 2) lift the forearm segment out
+      const push = _segPush(elbow, fixed, cols, margin);
+      if (!push) break;
+      fixed = vadd(fixed, push); moved = true;
+    }
+    if (!moved) return;
+    const sol = solveTwoBone(geo.pU, geo.pL, geo.pH, restU, restL, fixed, solveOpts);
     pose[up] = qToEulerXYZ(sol.upperQ);
     pose[lo] = qToEulerXYZ(sol.lowerQ);
   };

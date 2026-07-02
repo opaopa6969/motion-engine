@@ -80,7 +80,9 @@ Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: se
 
 **v0.8** adds **anticipation + follow-through** — the two animation principles the raw sin-bell lacked. A body now GATHERS before it acts and OVERSHOOTS before it settles: one-shot gestures use `swingEnv` (windup opposite → swing → settle past rest), and `Place`/`Pick` gather the hand backward before the reach (`opts.anticipate`, default 0.3; 0 opts out). The envelope is one tunable primitive, so the SAME knob later dials from realistic (small) to anime-exaggerated (big) — the seam for the "誇張" half of the goal.
 
-Roadmap (next, for "less mechanical"): (1) shoulder-cone limit + wrist world-leveling so a placed tile lies flat. (2) self-collision capsules driven from xpbd-body. (3) host wiring: feed real tile/wall/torso colliders + measured elbow pole from `render3d` (the game-side integration + in-engine visual tuning).
+**v0.9** adds a **shoulder-cone joint limit** (`opts.shoulder`, `DEFAULT_BODY.shoulder`) — the upper arm can't swing past an anatomical cone from rest — and extends the collision constraint to the **whole arm**: `makeArmConstraint` now lifts the FOREARM segment (elbow→hand) out of a collider, not just the fingertip, so a limb swept across the body rides over a torso capsule (self-collision, the plain-data path that pairs with xpbd-body).
+
+Roadmap (next): (1) **wrist world-leveling** so a placed tile lies flat on the table (rig-specific — tuned in-engine). (2) host wiring: feed real tile/wall/torso colliders + measured elbow pole from `render3d`, bump the importmap to the new tag, and visually tune (the game-side integration).
 
 ## License
 

@@ -519,6 +519,56 @@ function runPlace(target, opts, secs = 2.2) {
   ok(minProj0 > -0.005, 'anticipate:0 opts out of the windup');
 }
 
+// --- v0.9: shoulder cone limit + whole-arm self-collision -------------------
+
+// 35) shoulder cone: a big lateral target swings the upper arm past its cone
+//     when free, but the limit keeps it within `shoulder` radians of rest.
+{
+  const restA = vn(sub(fkElbow(ARM.pU, ARM.pL, RU), ARM.pU));
+  const far = [ARM.pU[0] + 0.4, ARM.pU[1] + 0.2, ARM.pU[2] + 0.2];
+  const coneAng = (opts) => {
+    const { upperQ } = solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, far, opts);
+    const a = vn(sub(fkElbow(ARM.pU, ARM.pL, upperQ), ARM.pU));
+    return Math.acos(Math.max(-1, Math.min(1, dot(a, restA))));
+  };
+  ok(coneAng({}) > 0.5, 'free solve swings the upper arm past the cone');
+  ok(coneAng({ shoulder: 0.5 }) <= 0.5 + 1e-3, 'shoulder limit holds the upper arm inside its cone');
+}
+
+// 36) whole-arm self-collision: a capsule (a torso) straddling the FOREARM at
+//     full reach — the hand may be clear but the forearm dips in. makeArmConstraint
+//     lifts the forearm out, not just the fingertip.
+{
+  const target = [REST_HAND[0] + 0.1, REST_HAND[1] - 0.02, REST_HAND[2] + 0.16];
+  // find the forearm (elbow→hand) at full reach from a plain Place
+  let elb, hnd, best = -9;
+  for (const pose of runPlace(target, { style: 'gentle' }, 1.2)) {
+    const uq = qFromEulerXYZ(pose.rightUpperArm);
+    const hand = handAt(pose), reach = dot(sub(hand, ARM.pU), vn(sub(target, ARM.pU)));
+    if (reach > best) { best = reach; hnd = hand; elb = fkElbow(ARM.pU, ARM.pL, uq); }
+  }
+  const mid = [(elb[0] + hnd[0]) / 2, (elb[1] + hnd[1]) / 2, (elb[2] + hnd[2]) / 2];
+  const fa = vn(sub(hnd, elb));                        // forearm axis
+  let perp = vn([fa[1], -fa[0], 0]); if (vl(perp) < 1e-6) perp = [1, 0, 0];
+  const capsule = { shape: 'capsule', a: [mid[0] - perp[0] * 0.2, mid[1] - perp[1] * 0.2, mid[2] - perp[2] * 0.2], b: [mid[0] + perp[0] * 0.2, mid[1] + perp[1] * 0.2, mid[2] + perp[2] * 0.2], r: 0.05 };
+  const distSegToCap = (a, b) => { let mn = 9; for (let i = 0; i <= 6; i++) { const t = i / 6; const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; mn = Math.min(mn, D(p, capClosest(p))); } return mn; };
+  function capClosest(p) { const ab = sub(capsule.b, capsule.a); const tt = Math.max(0, Math.min(1, dot(sub(p, capsule.a), ab) / (dot(ab, ab) || 1))); return [capsule.a[0] + ab[0] * tt, capsule.a[1] + ab[1] * tt, capsule.a[2] + ab[2] * tt]; }
+  const minClear = (useConstraint) => {
+    const eng = new MotionEngine();
+    if (useConstraint) eng.addConstraint(makeArmConstraint({ side: 'right', geo: GEO, colliders: [capsule] }));
+    eng.play(new Place('right', GEO, target, { style: 'gentle' }));
+    const dt = 1 / 60; let mn = 9;
+    for (let i = 0; i < Math.ceil(1.2 * 60); i++) {
+      const pose = eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 });
+      const uq = qFromEulerXYZ(pose.rightUpperArm);
+      mn = Math.min(mn, distSegToCap(fkElbow(ARM.pU, ARM.pL, uq), handAt(pose)));
+    }
+    return mn;
+  };
+  ok(minClear(false) < capsule.r, 'without the constraint the forearm dips into the torso capsule');
+  ok(minClear(true) > capsule.r - 0.02, 'the constraint lifts the whole forearm out of the capsule');
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
