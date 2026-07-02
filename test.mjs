@@ -4,7 +4,7 @@
 import {
   MotionEngine, Gesture, Spring, MANAGED, REST, GESTURE_DUR,
   Reach, Place, PLACE_STYLES, solveTwoBone, fkHand, qFromEulerXYZ, qToEulerXYZ,
-  Grip, Pick, gripPose, FINGER_BONES,
+  Grip, Pick, gripPose, FINGER_BONES, projectOut, makeArmConstraint, swingEnv,
 } from './index.js';
 
 const D = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -115,6 +115,39 @@ const REST_HAND = fkHand(ARM.pU, ARM.pL, ARM.pH, RU, RL);
     maxErr = Math.max(maxErr, Math.hypot(hand[0] - target[0], hand[1] - target[1], hand[2] - target[2]));
   }
   ok(maxErr < 1e-3, 'two-bone IK reaches reachable hand positions (maxErr=' + maxErr.toFixed(6) + ')');
+}
+
+// 8b) POLE VECTOR: as the target sweeps, the elbow tracks CONSISTENTLY on the
+//     pole side and moves smoothly (no shortest-arc flip). This is the anti-
+//     "unnatural elbow" fix — the elbow must not jump plane between frames.
+{
+  const pole = [0, -1, -0.3];                          // push the elbow down-and-back
+  const elbowAt = (t) => {
+    const { upperQ } = solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, t, { pole });
+    return fkElbow(ARM.pU, ARM.pL, upperQ);
+  };
+  let sameSide = true, maxJump = 0, prev = null;
+  for (let i = 0; i <= 20; i++) {
+    const x = -0.4 + (0.8 * i) / 20;                   // sweep the hand left→right
+    const t = [ARM.pU[0] + x, ARM.pU[1] - 0.35, ARM.pU[2] + 0.35];
+    const elbow = elbowAt(t);
+    // elbow offset from the shoulder→target line must lean toward the pole (y<0)
+    const dir = vn(sub(t, ARM.pU));
+    const off = sub(sub(elbow, ARM.pU), scl(dir, dot(sub(elbow, ARM.pU), dir)));
+    if (dot(off, pole) <= 0) sameSide = false;
+    if (prev) maxJump = Math.max(maxJump, D(elbow, prev));
+    prev = elbow;
+  }
+  ok(sameSide, 'elbow stays on the pole side across a target sweep (no flip)');
+  ok(maxJump < 0.08, 'elbow moves smoothly across the sweep (maxJump=' + maxJump.toFixed(4) + ')');
+}
+
+// 8c) flipping the pole flips which side the elbow bends toward
+{
+  const t = [ARM.pU[0] + 0.15, ARM.pU[1] - 0.3, ARM.pU[2] + 0.35];
+  const down = fkElbow(ARM.pU, ARM.pL, solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, t, { pole: [0, -1, 0] }).upperQ);
+  const up = fkElbow(ARM.pU, ARM.pL, solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, t, { pole: [0, 1, 0] }).upperQ);
+  ok(down[1] < up[1] - 0.05, 'pole direction controls the elbow side (down pole → lower elbow)');
 }
 
 // 9) unreachable target clamps to near max extension (finite, no NaN)
@@ -350,7 +383,160 @@ function runPlace(target, opts, secs = 2.2) {
   ok(same, 'Pick is deterministic');
 }
 
+// 27) orientation-space smoothing: a BIG fast reach swings the arm SMOOTHLY —
+//     the per-frame angular step changes gradually (bounded jerk), no gimbal
+//     jolt from independently springing three coupled Euler axes.
+{
+  const target = [REST_HAND[0] + 0.28, REST_HAND[1] + 0.30, REST_HAND[2] + 0.22];  // large swing
+  const eng = new MotionEngine();
+  eng.play(new Reach('right', ARM, target, 0.8));    // fast (0.8s)
+  const dt = 1 / 60; const qs = [];
+  for (let i = 0; i < 60; i++) {
+    const p = eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 });
+    qs.push(qFromEulerXYZ(p.rightUpperArm));
+  }
+  const ang = (a, b) => { let d = a[0]*b[0]+a[1]*b[1]+a[2]*b[2]+a[3]*b[3]; d = Math.min(1, Math.abs(d)); return 2 * Math.acos(d); };
+  const step = []; for (let i = 1; i < qs.length; i++) step.push(ang(qs[i], qs[i - 1]));
+  let maxStep = 0, maxJerk = 0;
+  for (let i = 0; i < step.length; i++) { maxStep = Math.max(maxStep, step[i]); if (i) maxJerk = Math.max(maxJerk, Math.abs(step[i] - step[i - 1])); }
+  ok(maxJerk < 0.02, 'reach swing is smooth (bounded orientation jerk=' + maxJerk.toFixed(4) + ')');
+  ok(maxStep < 0.2, 'reach swing has no single-frame snap (maxStep=' + maxStep.toFixed(4) + ')');
+}
+
+// 28) joint limit: an elbow-angle clamp stops the hand SHORT of a straight-arm
+//     target, keeping the interior elbow angle within the allowed range.
+{
+  const L1 = vl(ARM.pL), L2 = vl(ARM.pH);
+  const elbowAngle = (upperQ, lowerQ) => {
+    const elbow = fkElbow(ARM.pU, ARM.pL, upperQ);
+    const hand = fkHand(ARM.pU, ARM.pL, ARM.pH, upperQ, lowerQ);
+    const a = vn(sub(ARM.pU, elbow)), b = vn(sub(hand, elbow));   // elbow→shoulder, elbow→hand
+    return Math.acos(Math.max(-1, Math.min(1, dot(a, b))));       // interior angle: 0=folded … π=straight
+  };
+  const farStraight = [ARM.pU[0], ARM.pU[1] - (L1 + L2) * 0.98, ARM.pU[2]];  // nearly straight-down reach
+  const free = solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, farStraight);
+  const limited = solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, farStraight, { elbow: [0.35, 2.4] });
+  ok(elbowAngle(free.upperQ, free.lowerQ) > 2.6, 'free solve nearly straightens the elbow');
+  ok(elbowAngle(limited.upperQ, limited.lowerQ) <= 2.45, 'elbow limit holds the joint below its max angle');
+}
+
+// --- v0.7: collision / constraint pass ------------------------------------
+
+// 29) projectOut pushes a point to just outside each collider shape
+{
+  const plane = projectOut([0, 0.2, 0], [{ shape: 'plane', n: [0, 1, 0], o: [0, 0.5, 0] }]);
+  ok(plane[1] >= 0.5 - 1e-9, 'projectOut lifts a point above a plane');
+  const sph = projectOut([0.1, 0, 0], [{ shape: 'sphere', c: [0, 0, 0], r: 0.3 }], 0.02);
+  ok(Math.abs(vl(sph) - 0.32) < 1e-6, 'projectOut pushes a point to sphere surface + margin');
+  const cap = projectOut([0.05, 0.5, 0], [{ shape: 'capsule', a: [0, 0, 0], b: [0, 1, 0], r: 0.2 }]);
+  ok(Math.abs(Math.hypot(cap[0], cap[2]) - 0.2) < 1e-6 && Math.abs(cap[1] - 0.5) < 1e-6, 'projectOut pushes a point off a capsule axis to its radius');
+  const clear = [1, 1, 1];
+  ok(projectOut(clear, [{ shape: 'sphere', c: [0, 0, 0], r: 0.3 }]) === clear, 'projectOut leaves an already-clear point untouched');
+}
+
+// 30) a table-plane collider keeps the hand ON/above the surface even when the
+//     raw target sits below it (clamped), vs sinking through it with none.
+{
+  const below = [REST_HAND[0], REST_HAND[1] - 0.15, REST_HAND[2] + 0.05];
+  const yPlane = REST_HAND[1] - 0.05;
+  const plane = { shape: 'plane', n: [0, 1, 0], o: [0, yPlane, 0] };
+  const minHandY = (colliders) => {
+    const eng = new MotionEngine();
+    eng.play(new Reach('right', ARM, below, 1.2, { hold: 0.3, colliders }));
+    const dt = 1 / 60; let mn = 1e9;
+    for (let i = 0; i < 72; i++) mn = Math.min(mn, handAt(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 }))[1]);
+    return mn;
+  };
+  ok(minHandY(null) < yPlane - 0.02, 'without a collider the hand sinks below the plane');
+  ok(minHandY([plane]) > yPlane - 0.02, 'the table-plane collider keeps the hand on/above the surface');
+}
+
+// 31) post-pose constraint: a sphere ON THE PATH of a Place keeps the SPRUNG
+//     hand outside it even under spring lag (the goal-clamp alone can't, because
+//     the sprung hand lags its goal and cuts the corner). makeArmConstraint FK's
+//     the produced pose and re-IKs out. Function-form colliders + deterministic.
+{
+  const start = REST_HAND;                                   // Place's arc origin = rest hand
+  const target = [start[0], start[1] - 0.05, start[2] + 0.18];   // reach out-and-down
+  const c = [start[0], start[1] - 0.025, start[2] + 0.09];   // sphere straddling the straight path
+  const sphere = { shape: 'sphere', c, r: 0.05 };
+  const swept = (useConstraint) => {
+    const eng = new MotionEngine();
+    if (useConstraint) eng.addConstraint(makeArmConstraint({ side: 'right', geo: GEO, colliders: () => [sphere] }));
+    eng.play(new Place('right', GEO, target, { style: 'snap' }));
+    const dt = 1 / 60; const out = []; let mn = 1e9;
+    for (let i = 0; i < 90; i++) { const h = handAt(eng.update(dt, { t: i * dt, phase: 0, pose: {}, poseW: 0 })); mn = Math.min(mn, D(h, c)); out.push(h); }
+    return { mn, out };
+  };
+  ok(swept(false).mn < 0.05, 'without the constraint the swept hand passes through the obstacle');
+  const a = swept(true), b = swept(true);
+  ok(a.mn > 0.05 - 0.005, 'the constraint keeps the sprung hand outside the sphere (minDist=' + a.mn.toFixed(4) + ')');
+  let same = true;
+  for (let i = 0; i < a.out.length; i++) if (D(a.out[i], b.out[i]) > 1e-12) same = false;
+  ok(same, 'constrained placement is deterministic (incl. function-form colliders)');
+}
+
+// --- v0.8: anticipation + follow-through ----------------------------------
+
+// 32) swingEnv: gathers back before the swing and settles past rest after it;
+//     windup:0 collapses to the plain sin-bell (back-compat).
+{
+  ok(swingEnv(0.06) < 0, 'swingEnv winds up opposite before the swing (anticipation)');
+  ok(swingEnv(0.5) > 0.9, 'swingEnv reaches full swing at the middle');
+  ok(swingEnv(0.95) < 0, 'swingEnv overshoots past rest before settling (follow-through)');
+  ok(Math.abs(swingEnv(0.25, { windup: 0, follow: 0 }) - Math.sin(0.25 * Math.PI)) < 1e-9, 'windup:0/follow:0 == the plain bell');
+}
+
+// 33) the anticipation actually reaches the POSE: a fistPump dips the arm the
+//     opposite way (windup) before the pump, and overshoots past rest after.
+{
+  const trace = run(() => new Gesture('fistPump'));   // dur 1.0 → 60 frames
+  const rest = REST.rightUpperArm[2];                 // −1.2; the pump raises z
+  const z = trace.map((p) => p.rightUpperArm[2]);
+  let peakI = 0; for (let i = 0; i < 60; i++) if (z[i] > z[peakI]) peakI = i;
+  let minBefore = 9; for (let i = 0; i < peakI; i++) minBefore = Math.min(minBefore, z[i]);
+  let minAfter = 9; for (let i = peakI; i < 60; i++) minAfter = Math.min(minAfter, z[i]);
+  ok(z[peakI] > -0.2, 'fistPump still reaches full extension at the peak');
+  ok(minBefore < rest - 0.03, 'the arm gathers BELOW rest before the pump (anticipation in the pose)');
+  ok(minAfter < rest - 0.02, 'the arm overshoots past rest after the pump (follow-through in the pose)');
+}
+
+// 34) Place anticipation: the hand gathers BACKWARD (opposite the reach) before
+//     it goes out, then reaches full extension.
+{
+  const target = [REST_HAND[0] + 0.12, REST_HAND[1] - 0.05, REST_HAND[2] + 0.10];
+  const dir = vn(sub(target, REST_HAND));                 // reach direction
+  let minProj = 9, maxProj = -9;
+  for (const pose of runPlace(target, { style: 'gentle' }, 1.4)) {
+    const proj = dot(sub(handAt(pose), REST_HAND), dir);  // signed distance along the reach
+    minProj = Math.min(minProj, proj); maxProj = Math.max(maxProj, proj);
+  }
+  ok(minProj < -0.003, 'Place gathers the hand backward before reaching (anticipation, minProj=' + minProj.toFixed(4) + ')');
+  ok(maxProj > 0.9 * vl(sub(target, REST_HAND)), 'Place still reaches full extension');
+  // anticipate:0 removes the backward gather (back-compat / opt-out)
+  let minProj0 = 9;
+  for (const pose of runPlace(target, { style: 'gentle', anticipate: 0 }, 1.4)) minProj0 = Math.min(minProj0, dot(sub(handAt(pose), REST_HAND), dir));
+  ok(minProj0 > -0.005, 'anticipate:0 opts out of the windup');
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
 function vl(a) { return Math.hypot(a[0], a[1], a[2]); }
+// tiny vec helpers for the IK pole tests
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function scl(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function vn(a) { const l = vl(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+// elbow position (parent frame) from the solved upper-arm rotation
+function fkElbow(pU, pL, upperQ) {
+  const q = upperQ, p = pL;
+  const tx = 2 * (q[1] * p[2] - q[2] * p[1]);
+  const ty = 2 * (q[2] * p[0] - q[0] * p[2]);
+  const tz = 2 * (q[0] * p[1] - q[1] * p[0]);
+  return [
+    pU[0] + p[0] + q[3] * tx + (q[1] * tz - q[2] * ty),
+    pU[1] + p[1] + q[3] * ty + (q[2] * tx - q[0] * tz),
+    pU[2] + p[2] + q[3] * tz + (q[0] * ty - q[1] * tx),
+  ];
+}

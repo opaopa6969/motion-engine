@@ -38,13 +38,19 @@ All contributions composite into one per-bone target buffer; the springs smooth 
 ## API
 
 - `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `syncFrom(pose)`, `addConstraint(fn)`. `ctx.gain` (v0.4, default 1, clamped 0.2–2.5) scales one-shot gesture amplitude — the per-avatar 大袈裟さ.
-- `new Gesture(name, dur?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` and (v0.3) `'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`.
-- `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host.
+- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` and (v0.3) `'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`. `env` (v0.8) tunes anticipation/follow-through (`{windup, follow, anticipate, overshoot}`; `{windup:0}` = the plain bell).
+- `swingEnv(p, opts?)` (v0.8) — the anticipation+follow-through envelope (windup opposite → swing → settle past rest); the reusable primitive behind gesture/discard "溜め". `Place`/`Pick` take `opts.anticipate` (gather depth, default 0.3).
+- `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host. `opts.pole` (v0.6) — a parent-frame direction the **elbow** is pushed toward (down-and-back for a seated reach); defaults to the rig's natural rest bend.
 - `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` override. Drives shoulder + wrist too.
 - `new Grip(side, opts?)` — (v0.5) standalone finger open/close. `opts = { dur, keys:[[p,curl],…], flexSign, base, span }`; curl 0 = open, 1 = grip. `keys` are smoothstep-interpolated control points.
 - `new Pick(side, geo, opts)` — (v0.5) the full discard in one timeline: reach into the own hand → fingers close → sweep out → fingers open → retract. `opts = { grab:[x,y,z], place:[x,y,z], dur?, style?, flexSign?, …Place overrides }`; `grab`/`place` are targets in the upper-arm parent-local frame. The host follows the hand bone each frame to carry the tile mesh.
 - `gripPose(side, curl, opts?)` → `{ bone:[x,y,z] }` — finger Euler for a grip amount. `opts.flexSign` (±1) globally flips curl direction for a rig that bends the wrong way.
-- `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — pure analytic IK.
+- `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — pure analytic **pole-vector** IK (v0.6). `opts.pole` places the elbow explicitly (law of cosines) so it tracks consistently as the target sweeps instead of flipping to a shortest-arc accident; exact IK∘FK identity on the reachable shell. `opts.elbow = [min,max]` clamps the interior elbow angle (opt-in joint limit).
+- `DEFAULT_BODY` (v0.6) — a suggested `BodyProfile` (`{ elbow:[0.35,2.95] }`); spread its `elbow` into `Reach`/`Place`/`Pick` opts to enable the joint limit.
+- **collision** (v0.7): keep the reaching hand out of obstacles (table, tile wall, river tiles, another hand, own torso). Colliders are plain data in the IK target frame — `{shape:'plane',n,o}` / `{shape:'sphere',c,r}` / `{shape:'capsule',a,b,r}` (each may add its own `margin`). Two ways to use, layer both:
+  - **goal-clamp** — pass `opts.colliders` (array or per-frame `()=>array`) to `Reach`/`Place`/`Pick`; the hand's goal is projected outside every collider each frame, so the hand rests on / slides along the surface. Cheap, needs no host wiring.
+  - **post-pose** — `engine.addConstraint(makeArmConstraint({ side, geo, colliders, margin }))` FK's the sprung pose and re-IKs the hand out — catches the residual penetration a goal-clamp can't (the sprung hand lags its goal and cuts a corner mid-swing).
+  - `projectOut(point, colliders, margin?, passes?)` — the underlying pure projection, exported for host-side use.
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — forward kinematics (the IK round-trip check).
 - helpers: `Spring`, `MANAGED`, `REST`, `FINGER_BONES`, `GESTURE_DUR`, `qFromEulerXYZ`, `qToEulerXYZ` (Euler uses three.js `'XYZ'` order).
 
@@ -66,7 +72,15 @@ Headless: deterministic pose stream, spring stability, gesture settle, and `IK �
 
 ## Status
 
-Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action. **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). Roadmap: collision-correction constraint pass (pairs with xpbd-body M3 self-collision).
+Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action. **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). **v0.6** rewrites the IK core to a **pole-vector solver**: the elbow is placed explicitly instead of drifting with a shortest-arc swing, killing the "unnatural elbow flip" during reaches — while keeping exact IK∘FK identity.
+
+**v0.6** also smooths the arm chain in **orientation space** (a `QuatSpring`) instead of springing three Euler axes independently — the axes couple/gimbal on a big swing and read as a jolt; the SO(3) spring tracks the target quaternion shortest-path, so reaches swing smoothly (bounded jerk, tested). And it fills the `BodyProfile` seam with an opt-in **elbow joint limit** (`DEFAULT_BODY.elbow`) — a reach stops short of a hyperextended or over-folded arm instead of hitting anatomy-breaking poses.
+
+**v0.7** adds **collision correction** (the `addConstraint` seam is now filled): the reaching hand is kept out of arbitrary obstacles — the table, the tile wall, the discarded tiles in the river, another player's hand, the avatar's own torso — via plain-data colliders the host feeds in. Two layers: a cheap per-frame **goal-clamp** on the action (`opts.colliders`) and a robust **post-pose re-IK** constraint (`makeArmConstraint`) that catches spring-lag penetration.
+
+**v0.8** adds **anticipation + follow-through** — the two animation principles the raw sin-bell lacked. A body now GATHERS before it acts and OVERSHOOTS before it settles: one-shot gestures use `swingEnv` (windup opposite → swing → settle past rest), and `Place`/`Pick` gather the hand backward before the reach (`opts.anticipate`, default 0.3; 0 opts out). The envelope is one tunable primitive, so the SAME knob later dials from realistic (small) to anime-exaggerated (big) — the seam for the "誇張" half of the goal.
+
+Roadmap (next, for "less mechanical"): (1) shoulder-cone limit + wrist world-leveling so a placed tile lies flat. (2) self-collision capsules driven from xpbd-body. (3) host wiring: feed real tile/wall/torso colliders + measured elbow pole from `render3d` (the game-side integration + in-engine visual tuning).
 
 ## License
 

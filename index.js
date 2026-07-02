@@ -112,6 +112,14 @@ export const REST = Object.freeze({
 const ZERO3 = [0, 0, 0];
 const restOf = (bone) => REST[bone] || ZERO3;
 
+// A suggested BodyProfile the host can feed into IK actions (spread into opts).
+// v0.6 carries jointLimits: the elbow's interior-angle range in radians, so a
+// reach stops short of hyperextension (~π) or an over-folded arm (~0). The host
+// passes `elbow` from here into new Reach/Place/Pick(...). Purely opt-in.
+export const DEFAULT_BODY = Object.freeze({
+  elbow: Object.freeze([0.35, 2.95]),   // ≈20°..169°: never locked straight, never fully clenched
+});
+
 // Per-bone spring frequency: a lead→lag CHAIN. Proximal bones are stiff/fast,
 // distal bones soft/slow, so when a target moves the motion ripples
 // shoulder→upperArm→lowerArm→hand with overlap — the #1 read of mass/weight.
@@ -125,6 +133,15 @@ const SPRING_F = {
 // fingers are light + quick — a crisp open/close that settles fast (snappier than
 // the arm chain so the grip reads as a deliberate grab, not a slow droop).
 for (const b of FINGER_BONES) SPRING_F[b] = 4.2;
+
+// Bones smoothed in ORIENTATION space (QuatSpring) instead of per-Euler-axis.
+// The arm chain is the one place multiple axes swing together under IK; a
+// per-axis spring gimbals/couples there and reads as a jolt. Everything else
+// (torso pitch, head drift, single-axis finger curl) is fine per-axis.
+const QUAT_SMOOTH = new Set([
+  'leftShoulder', 'leftUpperArm', 'leftLowerArm', 'leftHand',
+  'rightShoulder', 'rightUpperArm', 'rightLowerArm', 'rightHand',
+]);
 
 // ------------------------------------------------------------- spring dynamics
 
@@ -292,11 +309,35 @@ export const GESTURE_DUR = Object.freeze({
   sigh: 1.6, exhale: 1.4,
 });
 
+// Anticipation + follow-through envelope for a one-shot swing. A real body
+// GATHERS before it acts and OVERSHOOTS before it settles — the two animation
+// principles the raw sin-bell (ease straight in, straight out) lacks, and the
+// #1 thing that reads as "mechanical" when absent. Shape over p∈(0,1):
+//   0 →(windup, opposite dir)→ −anticipate →(main swing)→ +1 →(settle)→ −overshoot → 0
+// `windup`/`follow` are the fractions of the action's life spent gathering /
+// following through; `anticipate`/`overshoot` are their depths. All tunable so
+// later the SAME primitive dials from realistic (small) to anime-exaggerated
+// (big). Pass {windup:0} to get the plain bell back.
+const SWING_DEFAULTS = { windup: 0.15, follow: 0.14, anticipate: 0.18, overshoot: 0.12 };
+export function swingEnv(p, opts) {
+  const o = opts || SWING_DEFAULTS;
+  const A = o.windup != null ? o.windup : SWING_DEFAULTS.windup;
+  const B = o.follow != null ? o.follow : SWING_DEFAULTS.follow;
+  const ant = o.anticipate != null ? o.anticipate : SWING_DEFAULTS.anticipate;
+  const over = o.overshoot != null ? o.overshoot : SWING_DEFAULTS.overshoot;
+  if (p <= 0 || p >= 1) return 0;
+  if (A > 0 && p < A) return -ant * Math.sin((p / A) * Math.PI);                 // gather back
+  if (B > 0 && p > 1 - B) return -over * Math.sin(((p - (1 - B)) / B) * Math.PI); // settle past rest
+  const q = (p - A) / (1 - A - B || 1e-6);                                        // main swing
+  return Math.sin(q * Math.PI);
+}
+
 export class Gesture {
-  constructor(name, dur) {
+  constructor(name, dur, env) {
     this.name = name;
     this.dur = dur || GESTURE_DUR[name] || 1.0;
     this.fn = GESTURES[name];
+    this.env = env;                                  // anticipation/follow tuning (undefined = defaults)
     this.t = 0;
     this.done = !this.fn;
   }
@@ -305,7 +346,7 @@ export class Gesture {
     this.t += ctx.dt;
     const p = this.t / this.dur;
     if (p >= 1) { this.done = true; return; }
-    const e = Math.sin(Math.min(1, p) * Math.PI);   // 0 → 1 → 0
+    const e = swingEnv(p, this.env);   // windup → swing → follow-through
     const d = this.fn(e, p);
     // ctx.gain (v0.4) = how BIG this body reacts (大袈裟さ). The host feeds a
     // per-avatar expressiveness here so a reserved character barely flinches and
@@ -335,6 +376,7 @@ const vdot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const vlen = (a) => Math.hypot(a[0], a[1], a[2]);
 const vnorm = (a) => { const l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const vscale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
 
 // minimal quaternion ops (plain [x,y,z,w]); Euler uses three.js' 'XYZ' order so
@@ -408,6 +450,58 @@ export function qToEulerXYZ(q) {
   return [ex, ey, ez];
 }
 
+// rotation vector (axis*angle) ↔ quaternion, for orientation-space smoothing.
+function qExp(v) {                                        // rotation vector → unit quat
+  const th = vlen(v);
+  if (th < 1e-8) return qNorm([v[0] / 2, v[1] / 2, v[2] / 2, 1]);
+  const s = Math.sin(th / 2) / th;
+  return [v[0] * s, v[1] * s, v[2] * s, Math.cos(th / 2)];
+}
+function qLog(q) {                                        // unit quat → rotation vector, |angle|≤π
+  const vn = Math.hypot(q[0], q[1], q[2]);
+  if (vn < 1e-8) return [0, 0, 0];
+  let th = 2 * Math.atan2(vn, clamp(q[3], -1, 1));        // [0, 2π)
+  if (th > Math.PI) th -= 2 * Math.PI;                    // → shortest [-π, π]
+  const k = th / vn;
+  return [q[0] * k, q[1] * k, q[2] * k];
+}
+
+/**
+ * Second-order dynamics for an ORIENTATION (a bone's local rotation), the SO(3)
+ * analogue of `Spring`. IK bones (the arm chain) can't be smoothed by springing
+ * their three Euler axes independently — the axes couple and gimbal, so a big or
+ * fast reach reads as a "カクッ" wobble/flip. This tracks a target quaternion the
+ * proper way: the geodesic error → rotation vector → a critically-damped spring
+ * on angular velocity → integrate the quat. Shortest-path, no gimbal, stable.
+ *   f     natural frequency (higher = snappier)
+ *   zeta  damping ratio (1 = critical, <1 = a little lively overshoot)
+ */
+class QuatSpring {
+  constructor(f = 2.4, zeta = 0.9, e0 = ZERO3) {
+    this.setParams(f, zeta);
+    this.q = qNorm(qFromEulerXYZ(e0));
+    this.w = [0, 0, 0];                                   // angular velocity (parent frame), rad/s
+  }
+  setParams(f, zeta) { const wn = 2 * Math.PI * f; this.kp = wn * wn; this.kd = 2 * zeta * wn; }
+  update(dt, qT) {
+    if (!(dt > 0)) return this.q;
+    const h = dt < 0.1 ? dt : 0.1;                        // clamp huge frame gaps (tab refocus)
+    let t = qT;
+    if (this.q[0] * qT[0] + this.q[1] * qT[1] + this.q[2] * qT[2] + this.q[3] * qT[3] < 0) {
+      t = [-qT[0], -qT[1], -qT[2], -qT[3]];               // shortest path
+    }
+    const e = qLog(qNorm(qMul(t, qConj(this.q))));        // error rotation vector
+    for (let i = 0; i < 3; i++) {
+      // semi-implicit in the damping term → unconditionally stable for any h
+      this.w[i] = (this.w[i] + h * this.kp * e[i]) / (1 + h * this.kd);
+      if (this.w[i] > 60) this.w[i] = 60; else if (this.w[i] < -60) this.w[i] = -60;
+    }
+    this.q = qNorm(qMul(qExp([this.w[0] * h, this.w[1] * h, this.w[2] * h]), this.q));
+    return this.q;
+  }
+  reset(e0) { this.q = qNorm(qFromEulerXYZ(e0)); this.w = [0, 0, 0]; }
+}
+
 /**
  * Forward kinematics of the hand for a two-bone arm — the inverse check for the
  * solver and the renderer's way to validate its measured geometry.
@@ -419,33 +513,79 @@ export function fkHand(pU, pL, pH, upperQ, lowerQ) {
 }
 
 /**
- * Analytic two-bone IK. Inputs in the upper-arm PARENT-local frame:
+ * Analytic two-bone IK with a POLE VECTOR. Inputs in the upper-arm PARENT-local
+ * frame:
  *   pU,pL,pH   bone local positions: shoulder(=upper pos), elbow offset, wrist offset
  *   restU,restL  rest LOCAL rotations (quaternions) of upper / lower arm
  *   target     desired hand position
+ *   opts.pole  parent-frame direction the ELBOW is pushed toward (e.g. down-and-
+ *              back for a seated reach). Default = the way the REST pose already
+ *              bends, so a model's natural elbow direction is preserved.
+ *
+ * The pole is the fix for the old "elbow flips to a shortest-arc accident" feel:
+ * the elbow is placed EXPLICITLY in the plane through the shoulder→target line
+ * and the pole, by the law of cosines — so as the target sweeps, the elbow
+ * tracks consistently on the pole side instead of rolling to whatever the
+ * minimal swing happened to give. Then each bone is swung from its REST
+ * direction to the solved direction (min-twist, preserving rest twist), which
+ * keeps IK∘FK an exact identity on the reachable shell (verified in tests).
+ *
  * Returns new LOCAL rotations {upperQ, lowerQ} placing the hand at `target`
- * (clamped to the reachable shell). Verified by fkHand round-trip in tests.
+ * (clamped to the reachable shell).
  */
 export function solveTwoBone(pU, pL, pH, restU, restL, target, opts = {}) {
   const L1 = vlen(pL), L2 = vlen(pH);
+  // rest geometry (parent frame): elbow/hand at rest + the rest bone DIRECTIONS
+  // we swing away from. lowerWorldRest is the lower arm's rest WORLD rotation.
   const restElbow = vadd(pU, qApply(restU, pL));
-  const restHand = vadd(restElbow, qApply(qMul(restU, restL), pH));
-  const restHandV = vsub(restHand, pU);
-  let hinge = vcross(vsub(restElbow, pU), vsub(restHand, restElbow));
-  if (vlen(hinge) < 1e-6) hinge = opts.pole || [0, 0, 1];   // straight arm → pole hint
-  hinge = vnorm(hinge);
+  const lowerWorldRest = qMul(restU, restL);
+  const restHand = vadd(restElbow, qApply(lowerWorldRest, pH));
+  const restA = vnorm(vsub(restElbow, pU));            // upper-arm rest direction
+  const restB = vnorm(vsub(restHand, restElbow));      // lower-arm rest direction
+
+  // clamp the target into the arm's reachable shell (annulus |L1-L2| … L1+L2)
   let d = vlen(vsub(target, pU));
-  d = clamp(d, Math.abs(L1 - L2) + 1e-3, (L1 + L2) * 0.999);
-  const tdir = vnorm(vsub(target, pU));
-  const interior = (dist) => Math.acos(clamp((L1 * L1 + L2 * L2 - dist * dist) / (2 * L1 * L2), -1, 1));
-  const dBend = interior(d) - interior(vlen(restHandV));     // elbow delta to hit distance d
-  const bendP = qFromAxisAngle(hinge, -dBend);               // bend in parent frame
-  const lowerSegBent = qApply(bendP, vsub(restHand, restElbow));
-  const handBentV = vadd(vsub(restElbow, pU), lowerSegBent);
-  const swingP = qFromUnitVectors(vnorm(handBentV), tdir);   // aim the bent arm at target
-  const upperQ = qMul(swingP, restU);
-  const hingeChild = qApply(qConj(restU), hinge);            // hinge in upper-arm child space
-  const lowerQ = qMul(qFromAxisAngle(hingeChild, -dBend), restL);
+  d = clamp(d, Math.abs(L1 - L2) + 1e-4, (L1 + L2) * 0.9999);
+  // joint limit (opt-in): keep the ELBOW's interior angle within [min,max] rad
+  // (a real elbow neither hyperextends past ~π nor over-folds past ~0). Enforced
+  // by mapping the angle range to a distance range via the law of cosines and
+  // clamping d — so the hand stops SHORT of an anatomy-breaking pose instead of
+  // reaching it. Default (no opts.elbow) = free, so existing behavior is intact.
+  if (opts.elbow) {
+    const dForAngle = (ang) => Math.sqrt(Math.max(0, L1 * L1 + L2 * L2 - 2 * L1 * L2 * Math.cos(ang)));
+    const dA = dForAngle(opts.elbow[0]), dB = dForAngle(opts.elbow[1]);   // smaller angle → smaller d
+    d = clamp(d, Math.min(dA, dB), Math.max(dA, dB));
+  }
+  const dir = vnorm(vsub(target, pU));                 // shoulder → target
+
+  // POLE direction (elbow push). Default: the rest elbow's offset from the
+  // shoulder→hand line, so the natural bend direction is kept. Host overrides
+  // with opts.pole. Projected perpendicular to `dir` to lie in the bend plane.
+  let pole = opts.pole;
+  if (!pole) {
+    const restHandDir = vnorm(vsub(restHand, pU));
+    const off = vsub(vsub(restElbow, pU), vscale(restHandDir, vdot(vsub(restElbow, pU), restHandDir)));
+    pole = vlen(off) > 1e-5 ? off : [0, -1, 0];        // straight rest → default down
+  }
+  let u = vsub(pole, vscale(dir, vdot(pole, dir)));    // component of pole ⟂ dir
+  if (vlen(u) < 1e-6) {                                 // pole ∥ dir → pick any ⟂
+    u = vcross(dir, [0, 1, 0]);
+    if (vlen(u) < 1e-6) u = vcross(dir, [1, 0, 0]);
+  }
+  u = vnorm(u);
+
+  // law of cosines: interior angle at the shoulder between dir and the upper arm.
+  const cosA = clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
+  const angleA = Math.acos(cosA);
+  const aUnit = vadd(vscale(dir, Math.cos(angleA)), vscale(u, Math.sin(angleA)));  // upper-arm dir
+  const elbow = vadd(pU, vscale(aUnit, L1));
+  const bUnit = vnorm(vsub(target, elbow));            // lower-arm dir (hand lands on target)
+
+  // swing each bone rest→solved, preserving rest twist. Exact IK∘FK identity:
+  //   upperQ·pL  = L1·aUnit ,  (upperQ·lowerQ)·pH = L2·bUnit  ⇒ hand = target.
+  const upperQ = qMul(qFromUnitVectors(restA, aUnit), restU);
+  const lowerWorld = qMul(qFromUnitVectors(restB, bUnit), lowerWorldRest);
+  const lowerQ = qMul(qConj(upperQ), lowerWorld);
   return { upperQ, lowerQ };
 }
 
@@ -459,6 +599,9 @@ export class Reach {
   constructor(side, geo, target, dur = 1.2, opts = {}) {
     this.side = side; this.geo = geo; this.target = target;
     this.dur = dur; this.t = 0; this.done = false; this.pole = opts.pole;
+    this.elbow = opts.elbow;                        // optional [min,max] interior-angle limit
+    this.colliders = opts.colliders;                // optional obstacle set (array | () => array)
+    this.margin = opts.margin || 0;
     this.hold = opts.hold || 0;                    // fraction of dur to dwell at full reach
     this.up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
     this.lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
@@ -476,7 +619,8 @@ export class Reach {
     if (p < 0.5 - h) w = Math.sin((p / (0.5 - h)) * (Math.PI / 2));
     else if (p > 0.5 + h) w = Math.sin(((1 - p) / (0.5 - h)) * (Math.PI / 2));
     else w = 1;
-    const { upperQ, lowerQ } = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, this.target, { pole: this.pole });
+    const tgt = this.colliders ? projectOut(this.target, _cols(this.colliders), this.margin) : this.target;
+    const { upperQ, lowerQ } = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgt, { pole: this.pole, elbow: this.elbow });
     buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, upperQ, w)));
     buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, lowerQ, w)));
   }
@@ -518,6 +662,7 @@ export class Place {
     const st = PLACE_STYLES[opts.style] || PLACE_STYLES.gentle;
     this.p = Object.assign({}, st, opts);
     this.side = side; this.geo = geo; this.target = target;
+    this.colliders = opts.colliders; this.margin = opts.margin || 0;
     this.dur = this.p.dur; this.t = 0; this.done = false;
     this.sign = side === 'left' ? 1 : -1;
     this.up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
@@ -538,13 +683,24 @@ export class Place {
     const tArrive = 0.45;
     const tDwell = tArrive + Math.min(0.45, P.dwell);   // contact → dwell end
 
-    // reach weight: ease to 1 by arrival, hold through dwell, peel back to 0.
-    // release exponent grows with P.release → a slow, reluctant let-go (linger).
+    // reach weight: (windup, opposite) → ease to 1 by arrival → hold through
+    // dwell → peel back to 0. The windup is anticipation — the hand gathers back
+    // a touch before it reaches out (w goes slightly NEGATIVE = past rest, away
+    // from the target). release exponent grows with P.release → a slow, reluctant
+    // let-go (linger). P.anticipate (default 0.1) tunes the gather depth; 0 = none.
+    const antW = P.anticipate != null ? P.anticipate : 0.3;
+    const antF = 0.2;                                   // windup = first 20% of the approach
     let w;
-    if (p < tArrive) w = Math.sin((p / tArrive) * (Math.PI / 2));
-    else if (p < tDwell) w = 1;
-    else w = 1 - Math.pow((p - tDwell) / (1 - tDwell), 1 + P.release * 2.5);
-    w = _c01(w);
+    if (p < tArrive) {
+      const a = p / tArrive;
+      if (antW > 0 && a < antF) w = -antW * Math.sin((a / antF) * Math.PI);         // gather back
+      else { const q = antW > 0 ? (a - antF) / (1 - antF) : a; w = Math.sin(q * (Math.PI / 2)); }
+    } else if (p < tDwell) {
+      w = 1;
+    } else {
+      w = 1 - Math.pow((p - tDwell) / (1 - tDwell), 1 + P.release * 2.5);
+      if (w < 0) w = 0;
+    }
 
     // IK target: lerp start→target by reach weight, + a vertical lift arc
     // (hand lifts off then settles down), + a brief downward sink at contact.
@@ -556,13 +712,20 @@ export class Place {
     tgt[1] += P.arc * Math.sin(_c01(p / tDwell) * Math.PI);                 // lift arc
     if (p >= tArrive && p < tDwell) tgt[1] -= P.sink * Math.sin(((p - tArrive) / (tDwell - tArrive)) * Math.PI);
 
-    // solve IK + optional forearm twist (ねじ込む), engaged from contact on
-    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgt, { pole: P.pole || this.geo.pole });
+    // solve IK + optional forearm twist (ねじ込む), engaged from contact on.
+    // clamp the goal out of obstacles first so the hand rests ON the surface.
+    const tgtC = this.colliders ? projectOut(tgt, _cols(this.colliders), this.margin) : tgt;
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, tgtC, { pole: P.pole || this.geo.pole, elbow: P.elbow });
     const tw = P.twist * _smooth(tArrive - 0.12, tArrive, p) * (p < 1 ? 1 : 0);
     let lowerQ = sol.lowerQ;
     if (tw) lowerQ = qMul(lowerQ, qFromAxisAngle([0, 1, 0], tw * 0.5 * this.sign));
-    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, w)));
-    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, lowerQ, w)));
+    // blend rest→IK by the MAGNITUDE of the reach weight: during the windup w<0
+    // (goal behind rest), and we want the arm to actually reach that backward
+    // goal, so the orientation engages by |w| toward the IK solution (not by the
+    // signed w, which would cancel the backward target). For w≥0 this is identical.
+    const bw = w < 0 ? -w : w;
+    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, bw)));
+    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, lowerQ, bw)));
 
     // shoulder roll/swing: peaks DURING the swing, ~0 at contact so IK stays
     // accurate where it matters. Roll forward + a little swing toward the target.
@@ -653,6 +816,7 @@ export class Pick {
     this.side = side; this.geo = geo;
     this.grab = opts.grab || [0, 0, 0];
     this.place = opts.place || [0, 0, 0];
+    this.colliders = opts.colliders; this.margin = opts.margin || 0;
     this.dur = opts.dur || 2.1; this.t = 0; this.done = false;
     this.flexSign = opts.flexSign;
     this.sign = side === 'left' ? 1 : -1;
@@ -679,7 +843,13 @@ export class Pick {
     // hand IK target + how fully the arm is extended (rest→IK blend)
     let pos, reachW;
     if (p < A) {                                   // rest → grab (into the own hand)
-      const w = Math.sin((p / A) * (Math.PI / 2));
+      // anticipation: the hand gathers back a touch before reaching in (w<0)
+      const antW = P.anticipate != null ? P.anticipate : 0.3;
+      const antF = 0.25;
+      const a = p / A;
+      let w;
+      if (antW > 0 && a < antF) w = -antW * Math.sin((a / antF) * Math.PI);
+      else { const q = antW > 0 ? (a - antF) / (1 - antF) : a; w = Math.sin(q * (Math.PI / 2)); }
       pos = lerp3(this.start, this.grab, w); reachW = w;
     } else if (p < C) {                            // dwell at grab (A..B), then sweep grab → place
       const wb = p < B ? 0 : _smooth(B, C, p);
@@ -691,9 +861,12 @@ export class Pick {
     }
     if (p >= C - 0.05 && p < D) pos[1] -= P.sink * Math.sin(((p - (C - 0.05)) / (D - (C - 0.05))) * Math.PI);  // settle sink
 
-    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, pos, { pole: P.pole || this.geo.pole });
-    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, reachW)));
-    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, sol.lowerQ, reachW)));
+    // keep the carrying hand out of obstacles (river tiles, the wall, the torso)
+    if (this.colliders) pos = projectOut(pos, _cols(this.colliders), this.margin);
+    const sol = solveTwoBone(this.geo.pU, this.geo.pL, this.geo.pH, this.restU, this.restL, pos, { pole: P.pole || this.geo.pole, elbow: P.elbow });
+    const bw = reachW < 0 ? -reachW : reachW;    // engage IK by magnitude (windup goal is behind rest)
+    buf.set(this.up, qToEulerXYZ(qSlerp(this.restU, sol.upperQ, bw)));
+    buf.set(this.lo, qToEulerXYZ(qSlerp(this.restL, sol.lowerQ, bw)));
 
     // shoulder + torso lead peak mid-sweep (the weight shift carrying the tile out)
     const swing = P.lead * Math.sin(_c01((p - A) / (C - A)) * Math.PI);
@@ -718,6 +891,103 @@ export class Pick {
   }
 }
 
+// --------------------------------------------------- collision / constraints
+//
+// Keep the reaching hand OUT of obstacles: the table surface, the tile WALL, the
+// discarded tiles in the river, another player's hand, the avatar's own torso.
+// Colliders are PLAIN DATA in the same frame as the IK target (the upper-arm
+// parent-local frame), so the host measures them from the scene and hands them
+// in — the engine stays three-free. Correction is a TARGET CLAMP: before the IK
+// solves, the hand's goal is projected to the nearest point OUTSIDE every
+// collider, so the solved arm physically can't reach into one — and the hand
+// slides along the surface instead (resting on the table, sweeping along the
+// wall). Cheaper and more stable than a post-pose push-out, and it keeps the arm
+// IK-consistent (no bone yanked out of the chain).
+//
+// Shapes (each may carry its own extra `margin`):
+//   { shape:'plane',   n:[x,y,z], o:[x,y,z] }    half-space; keep on +n side of o
+//   { shape:'sphere',  c:[x,y,z], r }             keep outside the ball (a tile/head)
+//   { shape:'capsule', a:[x,y,z], b:[x,y,z], r }  keep outside a fat segment (wall/forearm/torso)
+
+function _closestOnSeg(p, a, b) {
+  const ab = vsub(b, a);
+  const t = clamp(vdot(vsub(p, a), ab) / (vdot(ab, ab) || 1), 0, 1);
+  return vadd(a, vscale(ab, t));
+}
+
+// Push a point to the nearest surface just OUTSIDE one collider (+margin).
+// Returns the SAME array reference when already clear (lets projectOut detect
+// "no move" cheaply).
+function _pushOut(p, col, margin) {
+  const m = margin + (col.margin || 0);
+  if (col.shape === 'plane') {
+    const n = vnorm(col.n);
+    const sd = vdot(vsub(p, col.o), n) - m;
+    return sd < 0 ? vadd(p, vscale(n, -sd)) : p;
+  }
+  if (col.shape === 'sphere') {
+    const v = vsub(p, col.c), L = vlen(v), R = col.r + m;
+    if (L < R) return L > 1e-6 ? vadd(col.c, vscale(v, R / L)) : vadd(col.c, [0, R, 0]);
+    return p;
+  }
+  if (col.shape === 'capsule') {
+    const q = _closestOnSeg(p, col.a, col.b);
+    const v = vsub(p, q), L = vlen(v), R = col.r + m;
+    if (L < R) return L > 1e-6 ? vadd(q, vscale(v, R / L)) : vadd(q, [0, R, 0]);
+    return p;
+  }
+  return p;
+}
+
+/**
+ * Project a point to the nearest position OUTSIDE all colliders. Colliders can
+ * overlap, so it relaxes over a few passes (a push out of one may poke into
+ * another). Pure + deterministic. Returns a corrected point (equals `p` when
+ * already clear).
+ */
+export function projectOut(p, colliders, margin = 0, passes = 3) {
+  if (!colliders || !colliders.length) return p;
+  let q = p;
+  for (let k = 0; k < passes; k++) {
+    let moved = false;
+    for (const c of colliders) { const r = _pushOut(q, c, margin); if (r !== q) { q = r; moved = true; } }
+    if (!moved) break;
+  }
+  return q;
+}
+
+// colliders may be a live array or a per-frame function (tiles fall, hands move)
+function _cols(c) { return typeof c === 'function' ? c() : c; }
+
+/**
+ * Build a post-pose CONSTRAINT (for engine.addConstraint) that keeps an arm's
+ * hand out of obstacles AFTER the springs have run — so it catches the residual
+ * penetration a goal-clamp can't: the sprung hand LAGS its (already-clamped)
+ * goal and can cut a corner through an obstacle mid-swing. This FK's the hand
+ * from the produced pose, and if it's inside any collider, re-solves two-bone IK
+ * to the pushed-out point and writes the corrected upper/lower Euler back. Pass
+ * `colliders` as an array or a per-frame function; `geo` is the same measured
+ * rig geometry the actions use ({ pU,pL,pH,restU,restL,pole?,elbow? }).
+ *   engine.addConstraint(makeArmConstraint({ side:'right', geo, colliders, margin }))
+ */
+export function makeArmConstraint(opts) {
+  const { side, geo, margin = 0 } = opts;
+  const up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
+  const lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
+  const restU = qFromEulerXYZ(geo.restU), restL = qFromEulerXYZ(geo.restL);
+  return function armConstraint(pose) {
+    const cols = _cols(opts.colliders);
+    if (!cols || !cols.length || !pose[up] || !pose[lo]) return;
+    const uq = qFromEulerXYZ(pose[up]), lq = qFromEulerXYZ(pose[lo]);
+    const hand = fkHand(geo.pU, geo.pL, geo.pH, uq, lq);
+    const fixed = projectOut(hand, cols, margin);
+    if (fixed === hand) return;                        // already clear — no correction
+    const sol = solveTwoBone(geo.pU, geo.pL, geo.pH, restU, restL, fixed, { pole: geo.pole, elbow: geo.elbow });
+    pose[up] = qToEulerXYZ(sol.upperQ);
+    pose[lo] = qToEulerXYZ(sol.lowerQ);
+  };
+}
+
 // ------------------------------------------------------------------- scheduler
 
 /**
@@ -739,11 +1009,13 @@ export class MotionEngine {
     // off here later. The 'bulk' self-collider feeds the Phase 4 constraint pass.
     this.body = opts.body || null;
     this._buf = new TargetBuffer();
-    this.springs = {};          // bone → [Spring x3]
+    this.springs = {};          // bone → [Spring x3]  (per-axis, most bones)
+    this.qsprings = {};         // bone → QuatSpring    (arm chain, orientation space)
     for (const b of MANAGED) {
       const r = restOf(b);
       const f = SPRING_F[b] || 2.4;
-      this.springs[b] = [new Spring(f, 0.9, 0, r[0]), new Spring(f, 0.9, 0, r[1]), new Spring(f, 0.9, 0, r[2])];
+      if (QUAT_SMOOTH.has(b)) this.qsprings[b] = new QuatSpring(f, 0.9, r);
+      else this.springs[b] = [new Spring(f, 0.9, 0, r[0]), new Spring(f, 0.9, 0, r[1]), new Spring(f, 0.9, 0, r[2])];
     }
   }
 
@@ -770,6 +1042,7 @@ export class MotionEngine {
     for (const b of MANAGED) {
       const e = pose[b];
       if (!e) continue;
+      if (QUAT_SMOOTH.has(b)) { this.qsprings[b].reset(e); continue; }
       const sp = this.springs[b];
       sp[0].reset(e[0]); sp[1].reset(e[1]); sp[2].reset(e[2]);
     }
@@ -796,8 +1069,12 @@ export class MotionEngine {
     const pose = {};
     for (const b of MANAGED) {
       const tgt = buf.get(b);
-      const sp = this.springs[b];
-      pose[b] = [sp[0].update(dt, tgt[0]), sp[1].update(dt, tgt[1]), sp[2].update(dt, tgt[2])];
+      if (QUAT_SMOOTH.has(b)) {                 // orientation-space smoothing (arm chain)
+        pose[b] = qToEulerXYZ(this.qsprings[b].update(dt, qFromEulerXYZ(tgt)));
+      } else {
+        const sp = this.springs[b];
+        pose[b] = [sp[0].update(dt, tgt[0]), sp[1].update(dt, tgt[1]), sp[2].update(dt, tgt[2])];
+      }
     }
 
     // constraint / collision-correction pass (Phase 4): empty for now, but the
