@@ -309,19 +309,23 @@ const GESTURES = {
   // tension leaving the body — shoulders drop, chest softens (安堵の息抜き)
   exhale: (e) => ({ chest: [e * 0.07, 0, 0], leftUpperArm: [0, 0, -e * 0.14], rightUpperArm: [0, 0, e * 0.14], head: [e * 0.05, 0, 0] }),
 
-  // v0.10 — the ACTING library (所作). Axis conventions measured on real
-  // T-pose-normalized rigs (arm bones along ±X): forearm FLEXION toward the
-  // biceps is +z right / −z left; horizontal forward swing is +y right / −y
-  // left; upperArm −x pitches the arm forward, ±z raises it laterally.
+  // v0.10 — the ACTING library (所作). Axis conventions MEASURED on a real
+  // T-pose-normalized rig (arm bones along ±X; empirical Jacobian probe):
+  // forearm FLEXION toward the biceps is +z right / −z left; horizontal
+  // forward swing is +y right / −y left; upperArm +x pitches the arm FORWARD
+  // (yes, positive — the raw retarget flips the naive sign), ±z raises it
+  // laterally (+z right / −z left).
   // ------------------------------------------------------------------------
   // 拍手 — both hands brought together in front of the chest, palms tapping on
   // a beat. Replaces the retarget-broken external clip that crossed the arms.
   clap: (e, p) => {
-    // tap together/apart — slow & wide enough to survive the spring smoothing
-    const beat = Math.sin(p * Math.PI * 4) * 0.4 * e;
+    // palms MEET in front (numbers quasi-Newton-fitted on a real rig: hands
+    // land 3cm apart); the beat rides the forearm swing so they tap apart/
+    // together. Slow & wide enough to survive the spring smoothing.
+    const beat = Math.sin(p * Math.PI * 6) * 0.35 * e;
     return {
-      rightUpperArm: [-e * 0.95, 0, e * 0.32], leftUpperArm: [-e * 0.95, 0, -e * 0.32],
-      rightLowerArm: [0, e * 0.55, e * 1.15 + beat], leftLowerArm: [0, -e * 0.55, -e * 1.15 - beat],
+      rightUpperArm: [e * 1.85, 0, -e * 0.66], leftUpperArm: [e * 1.85, 0, e * 0.66],
+      rightLowerArm: [0, -e * 0.91 + beat, e * 0.23], leftLowerArm: [0, e * 0.91 - beat, -e * 0.23],
       head: [e * 0.06, 0, 0], chest: [e * 0.04, 0, 0],
     };
   },
@@ -344,7 +348,7 @@ const GESTURES = {
   // 放銃の悔しさ — head drops, the right fist comes up to the forehead
   fistToForehead: (e) => ({
     head: [e * 0.38, 0, 0], spine: [e * 0.07, 0, 0], chest: [e * 0.08, 0, 0],
-    rightUpperArm: [-e * 0.45, 0, e * 1.45], rightLowerArm: [0, 0, e * 1.95],
+    rightUpperArm: [e * 0.5, 0, e * 1.3], rightLowerArm: [0, 0, e * 1.95],
     ...gripPose('right', e * 0.75),
   }),
   // やれやれ — head down, slowly shaking side to side, shoulders drawn in
@@ -357,7 +361,7 @@ const GESTURES = {
   // folds across the belly to cup the right elbow
   ponder: (e) => ({
     head: [e * 0.1, e * 0.08, e * 0.24],
-    rightUpperArm: [-e * 0.3, 0, e * 1.3], rightLowerArm: [0, 0, e * 1.92],
+    rightUpperArm: [e * 0.35, 0, e * 1.0], rightLowerArm: [0, 0, e * 1.92],
     leftUpperArm: [-e * 0.28, 0, -e * 0.12], leftLowerArm: [0, -e * 1.25, 0],
     chest: [e * 0.05, 0, 0],
   }),

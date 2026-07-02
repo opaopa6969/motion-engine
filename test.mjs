@@ -640,11 +640,13 @@ const flexZ = (euler) => {
   ok(maxL < 0.12, `v0.10 set never hyperextends the left elbow (maxTwist=${maxL.toFixed(3)})`);
 }
 
-// 38) clap actually beats: the right-forearm flexion oscillates around its hold
+// 38) clap actually beats: the forearm SWING (the meet axis, twist about Y)
+//     oscillates around its hold — palms tapping apart/together
 {
+  const twistY = (euler) => { const q = qFromEulerXYZ(euler); let tw = 2 * Math.atan2(q[1], q[3]); if (tw > Math.PI) tw -= 2 * Math.PI; if (tw < -Math.PI) tw += 2 * Math.PI; return tw; };
   const eng = new MotionEngine(); eng.play(new Gesture('clap'));
   const z = [];
-  for (let i = 0; i < Math.ceil(GESTURE_DUR.clap * 60); i++) z.push(flexZ(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }).rightLowerArm));
+  for (let i = 0; i < Math.ceil(GESTURE_DUR.clap * 60); i++) z.push(twistY(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }).rightLowerArm));
   let flips = 0;
   for (let i = 2; i < z.length; i++) { const d1 = z[i - 1] - z[i - 2], d2 = z[i] - z[i - 1]; if (d1 * d2 < 0 && Math.abs(d2) > 3e-4) flips++; }
   ok(flips >= 2, `clap taps on a beat (${flips} direction changes)`);
