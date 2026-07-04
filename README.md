@@ -1,3 +1,5 @@
+**English** · [日本語](./README.ja.md)
+
 # motion-engine
 
 > Procedural human-motion engine for VRM avatars — **natural body action without motion capture.**
