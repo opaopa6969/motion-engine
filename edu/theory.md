@@ -1,98 +1,100 @@
-# モーションの理論、中学生に説明してみる
+**English** · [日本語](./theory.ja.md)
 
-登場人物
+# Explaining motion theory to a middle schooler
 
-- **ユウ** — 中学2年。ゲーム好き。素朴な疑問を容赦なくぶつけてくる。
-- **僕** — このエンジンを作ってる開発者。作りながら答える。
+Cast
+
+- **Yu** — 8th grader. Loves games. Fires off blunt, naive questions without mercy.
+- **Me** — the developer building this engine. Answers while building it.
 
 ---
 
-**ユウ**「ねえ、この麻雀ゲームのキャラ、なんか生きてる感じで動くじゃん。あれって動きを全部録画してんの?」
+**Yu**: "Hey, the characters in this mahjong game move like they're actually alive. Did you record all that motion?"
 
-**僕**「いや、録画は一切してない。モーションキャプチャっていう、人にセンサー付けて動きを記録するやつ、あるでしょ。あれをゼロで作ってる」
+**Me**: "Nope, no recording at all. You know motion capture, right — strap sensors on a person and record how they move? This is built without any of that."
 
-**ユウ**「ゼロ? じゃあどうやって手とか動かしてんの」
+**Yu**: "None? Then how are the hands moving?"
 
-**僕**「毎フレーム、その場で計算して作ってる。……まあ、最初はひどかったけどね」
+**Me**: "It's computed on the spot, every single frame. ...Though, honestly, it was terrible at first."
 
-**ユウ**「ひどかった?」
+**Yu**: "Terrible how?"
 
-**僕**「うん。最初さ、体を揺らそうと思って、サイン波っていう波の形でゆらゆらさせたわけ。そしたらな……完全に『ロボットのラジオ体操』になって、僕は絶望した」
+**Me**: "Yeah. At first, to make the body sway, I used something called a sine wave — a wave shape — to make it wobble. And it turned into... a complete 'robot doing radio calisthenics.' I was devastated."
 
-**ユウ**「あはは、なにそれ」
+**Yu**: "Ha, what does that even mean."
 
-**僕**「規則正しすぎるんだよ。カックンカックン、同じ動きの繰り返し。人間はあんな動きしない。そこから『じゃあ本物の体って何が違うんだ?』って考え始めた。今日はその話をする」
+**Me**: "It's too regular. Clunk, clunk, the exact same motion repeating. Real humans don't move like that. That's when I started asking: 'okay, so what's actually different about a real body?' That's today's topic."
 
-## バネとおもりの話
+## The spring-and-weight thing
 
-**僕**「まず質問。下敷きの端を持って、もう片方をビョーンって弾いたことある?」
+**Me**: "First question. Ever held one end of a ruler on a desk and flicked the other end?"
 
-**ユウ**「ある。ビヨンビヨンってなるやつ」
+**Yu**: "Yeah, the boing-boing thing."
 
-**僕**「あれ、パッと動いて、行き過ぎて、戻って、また少し行き過ぎて……だんだん収まるでしょ。あの『自然な収まり方』が超大事なんだ」
+**Me**: "Right — it snaps, overshoots, comes back, overshoots a little again... and gradually settles down. That 'natural way of settling' is hugely important."
 
-**ユウ**「なんで大事なの」
+**Yu**: "Why's it important?"
 
-**僕**「サイン波のラジオ体操には、あの『行き過ぎて戻る』がないから。目標の場所にスッと動いて、ピタッと止まる。機械みたいでしょ。でも本物の腕は、勢いがついてちょっと行き過ぎて、戻ってくる。その一瞬のズレが『重さ』とか『生きてる感』になる」
+**Me**: "Because the sine-wave radio calisthenics doesn't have that 'overshoot and come back' at all. It moves straight to the target and stops dead. Looks mechanical, right? But a real arm has momentum, it overshoots a bit, then comes back. That tiny lag is what reads as 'weight' or 'being alive.'"
 
-**ユウ**「なるほど。じゃあ全部ビヨンビヨンさせればいいの?」
+**Yu**: "I see. So should everything just boing-boing then?"
 
-**僕**「そこがミソでね。ドアクローザーって知ってる? ドアの上についてて、勝手にゆっくり閉まるやつ」
+**Me**: "That's exactly the trick. You know door closers? The thing on top of a door that closes it slowly by itself?"
 
-**ユウ**「あー、バタンって言わないで閉まるドアね」
+**Yu**: "Oh, the one that closes without slamming?"
 
-**僕**「あれはビヨンビヨンしないで、スーッと静かに閉まるでしょ。同じ『バネとおもり』の仕組みなのに、片方はビヨンビヨン、片方はスーッ。何が違うと思う?」
+**Me**: "That one doesn't boing-boing at all — it glides shut, quiet and smooth. Same 'spring and weight' mechanism, but one boings and the other glides. What do you think the difference is?"
 
-**ユウ**「……ブレーキの強さ?」
+**Yu**: "...how strong the brakes are?"
 
-**僕**「大正解。専門用語で『減衰(げんすい)』って言うんだけど、要はブレーキの効き具合。ブレーキ弱めだと下敷きみたいにビヨンビヨン、強めだとドアクローザーみたいにスーッ。この『バネの強さ』と『ブレーキの強さ』の2つのつまみを回すだけで、元気な動きも落ち着いた動きも作れる」
+**Me**: "Nailed it. The technical term is 'damping' — basically, how hard the brakes bite. Weak brakes: boing-boing like the ruler. Strong brakes: smooth like the door closer. Just by turning these two dials — 'spring strength' and 'brake strength' — you can make anything from energetic motion to calm motion."
 
-**ユウ**「つまみ2つで全部? すごくない?」
+**Yu**: "Two dials for all of it? That's kind of amazing."
 
-**僕**「これが第1のヒミツ。このエンジンでは `Spring`(バネ)っていう部品がそれをやってる。腕を上げるとき、目標の角度に向かってバネで引っぱる。そうすると勝手に『スッと加速して、ちょっと行き過ぎて、収まる』が生まれる。手でカクカク指定しなくていい」
+**Me**: "This is secret number one. In this engine there's a part called `Spring` that does exactly this. When an arm lifts, it's pulled toward the target angle by a spring. That alone produces 'snap into acceleration, overshoot a bit, settle' for free. No need to hand-key every little step."
 
-## 違う周期の波を足す
+## Adding waves of different periods
 
-**ユウ**「でもさ、じっとしてるときも微妙に動いてるよね。あれは?」
+**Yu**: "But even standing still, it's moving a tiny bit, right? What's that about?"
 
-**僕**「よく見てる。あれが第2のヒミツ。……さっきのラジオ体操の反省なんだけどさ、波を1個だけ使うと必ず繰り返すんだよ。同じ形がループする。人間はループしない」
+**Me**: "Good eye. That's secret number two. ...Learning from that radio-calisthenics disaster — if you only use one wave, it's guaranteed to repeat. The same shape loops. Real humans don't loop."
 
-**ユウ**「どうすんの」
+**Yu**: "So what do you do?"
 
-**僕**「周期の違う波を、何個も足す。たとえば呼吸はゆっくりの波、体重の移動はもっとゆっくりの波、指先の細かい揺れは速い波。この3つを足し算する」
+**Me**: "Add together several waves with different periods. Say, breathing is a slow wave, weight shifting is an even slower wave, and tiny finger jitter is a fast wave. Add all three together."
 
-**ユウ**「足すとどうなるの」
+**Yu**: "What happens when you add them?"
 
-**僕**「これがおもしろくて。周期が『きれいに割り切れない』波同士を足すと、二度と同じ形にならないんだ。ずーっと違う揺れ方が続く」
+**Me**: "This is the fun part. When you add waves whose periods don't divide evenly into each other, the shape never repeats the same way twice. The wobble just keeps changing, forever."
 
-**ユウ**「なんで割り切れないと繰り返さないの?」
+**Yu**: "Why does not-dividing-evenly stop it from repeating?"
 
-**僕**「たとえば片方が3秒周期、もう片方が3.7秒周期だとするじゃん。両方が『同じタイミングで最初と同じ形』に戻るのって、すごく先まで来ない。3.1とか3.7とか、半端な数にしとくと、実質ずっと戻ってこない。だからループしない」
+**Me**: "Say one wave has a 3-second period and the other has a 3.7-second period. For both to line up back to 'exactly the same shape as the start' at the same moment takes a really long time. If you pick fractional numbers like 3.1 or 3.7, it effectively never comes back around. So it never loops."
 
-**ユウ**「へー。ズレてるのをわざと利用してんだ」
+**Yu**: "Huh. So you're deliberately exploiting the mismatch."
 
-**僕**「そう。信号(ノイズ)を作るのに、乱数……サイコロみたいなランダム、あれを使う手もあるんだけど、僕はあえて使ってない。波の足し算だけ。そうすると『同じ条件なら毎回まったく同じ動き』が保証できて、テストしやすいから。ここは開発の都合ね」
+**Me**: "Exactly. There's another option for generating that kind of signal — noise, using randomness, like rolling dice — but I deliberately don't use that. Just adding waves together. That way, 'same conditions in, exact same motion out, every time' is guaranteed, which makes it testable. That part's really for development's sake."
 
-## 層(レイヤー)を重ねる
+## Stacking layers
 
-**ユウ**「バネと、波の足し算。もう1個あるって言ってたよね」
+**Yu**: "Springs, and adding waves together. You said there was one more thing."
 
-**僕**「第3のヒミツは『重ねる』。絵を描くとき、透明なシートを何枚も重ねる感じ知ってる?」
+**Me**: "Secret number three is 'layering.' You know how, when drawing, you stack a bunch of transparent sheets?"
 
-**ユウ**「アニメのセル画みたいな?」
+**Yu**: "Like animation cels?"
 
-**僕**「それそれ。動きも同じで、1枚目に『呼吸』、2枚目に『感情による姿勢』、3枚目に『ガッツポーズ』みたいな一発芸、って重ねていく。全部足し合わせて最終的な姿勢になる」
+**Me**: "Exactly that. Motion works the same way — layer one is 'breathing,' layer two is 'posture from emotion,' layer three is a one-shot bit like a 'fist pump.' Add them all together and you get the final pose."
 
-**ユウ**「上書きじゃなくて足すんだ」
+**Yu**: "You add them instead of overwriting?"
 
-**僕**「そこ重要。昔は上書きしてたんだよ。ガッツポーズしたら呼吸が消える、みたいな。そうすると急にピタッと呼吸が止まって不自然だった。今は足すから、ガッツポーズしながらもちゃんと息してるし、感情も乗ってる。少ない部品でも、重ねると表情がどんどん増える」
+**Me**: "That part matters a lot. It used to overwrite. Do a fist pump, and breathing would just vanish. Breathing would suddenly snap to a dead stop and it looked unnatural. Now it adds, so during a fist pump the character is still visibly breathing, and the emotion is still riding along too. Even with few building blocks, stacking them multiplies the range of expression."
 
-**ユウ**「バネ・波の足し算・重ねる。この3つか」
+**Yu**: "Springs, adding waves, stacking layers. Those three, huh."
 
-**僕**「この3つで『録画なしで生きてる体』を作ってる。派手な仕組みじゃなくて、単純な部品の組み合わせ。そこが気に入ってる」
+**Me**: "Those three are what build 'a living body with no recording.' Not some flashy mechanism — just simple parts combined. That's what I like about it."
 
-## で、コードのどこ?
+## So where's this in the code?
 
-**ユウ**「これ、実際のプログラムのどこにあるの」
+**Yu**: "Where is this actually in the program?"
 
-**僕**「`index.js` ってファイルを開くとね——バネは `Spring` っていうクラス、波の足し算は `noise` って関数と `NoiseIdle`、重ねる仕組みは `TargetBuffer` の `add`(足し算)ってところ。今日の3つの話が分かってれば、あのファイルが『どこで何をしてるか』は全部読める。ラジオ体操から始まった割には、悪くない出来だよ」
+**Me**: "Open the file called `index.js` — the spring is a class called `Spring`, the wave-adding is a function called `noise` plus `NoiseIdle`, and the layering mechanism is the `add` on `TargetBuffer`. Once you get today's three ideas, you can read exactly what's happening where in that file. Not bad, for something that started out as robot calisthenics."

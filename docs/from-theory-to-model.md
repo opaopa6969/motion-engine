@@ -1,171 +1,173 @@
-# 理論から engine/model へ — motion-engine 設計書
+**English** · [日本語](./from-theory-to-model.ja.md)
 
-対象読者: 実装できる人。「2次系ダイナミクス・非通約な正弦波の重ね合わせ・少数プリミティブの層状合成」という理論を、どうやって `index.js` の具体コードに落としているかを、現実装に即して書く。絵に描いた餅ではなく、いま動いているコードの設計根拠。
+# From theory to engine/model — motion-engine design doc
 
-理論の3本柱と、それを担う実装:
+Intended reader: someone who can implement things. This describes, in terms of the actual current implementation, how the theory — "2nd-order dynamics · superposition of incommensurate sine waves · layered composition of a small set of primitives" — is translated into concrete code in `index.js`. Not a pie-in-the-sky design doc; the design rationale for code that is running right now.
 
-| 理論 | 実装 |
+The theory's three pillars, and the implementation that carries each:
+
+| theory | implementation |
 |---|---|
-| 2次系ダイナミクス(バネ-ダンパ) | `Spring` / `QuatSpring` |
-| 非通約な正弦波の重ね合わせ | `noise()` / `NoiseIdle` |
-| 少数プリミティブの層状合成 | `TargetBuffer` + `MotionEngine.update` のパイプライン |
+| 2nd-order dynamics (spring-damper) | `Spring` / `QuatSpring` |
+| superposition of incommensurate sine waves | `noise()` / `NoiseIdle` |
+| layered composition of a small set of primitives | `TargetBuffer` + the `MotionEngine.update` pipeline |
 
-前提となる設計制約は README のとおり: **pure / 依存ゼロ / three.js・VRM・DOM を import しない / 決定論的(`Math.random` 禁止)/ headless で単体テスト可能**。出力は plain-data な Pose `{ boneName: [x,y,z] }`(ラジアン, 正規化 VRM ローカル空間, three.js の `'XYZ'` Euler 順)。ホスト側レンダラがこれをボーンに適用する。
+The design constraints this all sits under are the same as the README: **pure / zero dependencies / no `three.js`, VRM, or DOM imports / deterministic (`Math.random` forbidden) / unit-testable headless**. The output is a plain-data Pose `{ boneName: [x,y,z] }` (radians, normalized VRM local space, three.js `'XYZ'` Euler order). The host-side renderer applies this to the bones.
 
 ---
 
-## 1. 2次系 → Spring の離散更新式
+## 1. 2nd-order system → Spring's discrete update equation
 
-理論は「目標に向かう2次系(質量-バネ-ダンパ)を積分すると、加速・行き過ぎ(overshoot)・整定(settle)がタダで出る」。これを sin ベタ打ちの代わりに全ボーンに敷く。
+The theory: "integrate a 2nd-order system (mass-spring-damper) heading toward a target, and acceleration, overshoot, and settle come for free." This gets laid over every bone instead of a flat sine.
 
-### スカラ版 `Spring`
+### Scalar version: `Spring`
 
-パラメータは3つ:
+Three parameters:
 
-- `f` — 固有周波数(Hz的)。大きいほどキビキビ。
-- `zeta` — 減衰比。`1` で臨界制動(行き過ぎなし)、`<1` で弾む。
-- `r` — レスポンス。`0` で素直、`>0` で先読み、`<0` で怠い追従。
+- `f` — natural frequency (Hz-ish). Larger = snappier.
+- `zeta` — damping ratio. `1` = critically damped (no overshoot), `<1` = bouncy.
+- `r` — response. `0` is honest tracking, `>0` looks ahead, `<0` lags lazily.
 
-内部係数(`setParams`):
+Internal coefficients (`setParams`):
 
 ```
 w  = 2π f
-k1 = zeta / (π f)          // 速度の減衰項
-k2 = 1 / w²                // 慣性項
-k3 = (r zeta) / w          // 目標速度の先読み
+k1 = zeta / (π f)          // velocity damping term
+k2 = 1 / w²                // inertia term
+k3 = (r zeta) / w          // target-velocity lookahead
 ```
 
-更新式は semi-implicit(準陰的)積分。目標 `x` の速度を差分で推定し、`k2` に**安定化クランプ**をかけてから2次系を1ステップ進める:
+The update equation is semi-implicit integration. The velocity of the target `x` is estimated by finite difference, a **stabilizing clamp** is applied to `k2`, and then the 2nd-order system is advanced one step:
 
 ```
-xd = (x - this.x) / dt                      // 目標速度の推定
-k2 = max(k2, 1.1·(dt²/4 + dt·k1/2))         // 大きな dt でも発散させない下限
+xd = (x - this.x) / dt                      // estimate target velocity
+k2 = max(k2, 1.1·(dt²/4 + dt·k1/2))         // lower bound so a big dt can't blow up
 y  += dt · yd
 yd += dt·(x + k3·xd - y - k1·yd) / k2
 ```
 
-`k2` のクランプがキモ。タブ復帰などで `dt` が跳ねても、慣性項の下限を `dt` に応じて引き上げることで積分が爆発しない。テストは「100秒の dt スパイクを食わせても NaN/発散しない」ことを確認している。
+The `k2` clamp is the crux. Even if `dt` spikes (e.g. returning from a backgrounded tab), raising the inertia term's lower bound in proportion to `dt` keeps the integration from exploding. A test feeds it a 100-second `dt` spike and confirms no NaN / no divergence.
 
-### 向き版 `QuatSpring`(v0.6)
+### Orientation version: `QuatSpring` (v0.6)
 
-腕チェーン(shoulder→upperArm→lowerArm→hand)だけは、**Euler 3軸を独立にバネ追従させると軸が結合/ジンバルして「カクッ」と暴れる**。そこで SO(3) 上の2次系にする:
+Only the arm chain (shoulder→upperArm→lowerArm→hand) has a problem: **spring-tracking the 3 Euler axes independently lets the axes couple/gimbal and jerk**. So it's promoted to a 2nd-order system on SO(3):
 
-1. 目標クォータニオン `qT` と現在 `q` の**測地線誤差**を回転ベクトルに落とす: `e = log(qT · conj(q))`(最短経路, `|角| ≤ π`)。
-2. 角速度 `w` に臨界制動バネ(`kp = wn²`, `kd = 2·zeta·wn`)。減衰項を semi-implicit にして無条件安定に: `w = (w + h·kp·e) / (1 + h·kd)`。
-3. `q = normalize(exp(w·h) · q)` で積分。
+1. Take the **geodesic error** between the target quaternion `qT` and the current `q` down to a rotation vector: `e = log(qT · conj(q))` (shortest path, `|angle| ≤ π`).
+2. Apply a critically-damped spring to the angular velocity `w` (`kp = wn²`, `kd = 2·zeta·wn`). The damping term is made semi-implicit for unconditional stability: `w = (w + h·kp·e) / (1 + h·kd)`.
+3. Integrate with `q = normalize(exp(w·h) · q)`.
 
-**サブステップ(v0.9.1)**: 1フレームの `dt` を `1/60` 刻みに割って回す。5fps のような大きなギャップでも `kp·e·h` が小さく保たれ、剛性項が目標を飛び越えて腕が反転するのを防ぐ。60fps ではちょうど1ステップなので通常再生はバイト一致(退行なし)。巨大ギャップは先に `0.25s` にクランプ。
+**Substepping (v0.9.1)**: a single frame's `dt` is chopped into `1/60` increments. Even over a large gap like 5fps, `kp·e·h` stays small, which stops the stiffness term from overshooting the target and flipping the arm. At 60fps it's exactly one step, so normal playback is byte-identical (no regression). Huge gaps are clamped to `0.25s` first.
 
-### どのボーンをどっちで smoothing するか
+### Which bones get smoothed which way
 
-- `QUAT_SMOOTH`(腕チェーンの8ボーン)→ `QuatSpring`
-- それ以外(体幹ピッチ, 頭ドリフト, 単軸の指カール)→ 軸ごとの `Spring`×3
+- `QUAT_SMOOTH` (the arm chain's 8 bones) → `QuatSpring`
+- everything else (torso pitch, head drift, single-axis finger curl) → per-axis `Spring` × 3
 
-周波数はリード→ラグの**チェーン**として設計(`SPRING_F`): 近位を速く(shoulder 3.0)遠位を遅く(hand 1.9)。目標が動くと shoulder→hand へ遅れて波及し、この**オーバーラップが「重さ」の第一の手がかり**になる。指は軽く速い(4.2)。
+Frequencies are designed as a lead→lag **chain** (`SPRING_F`): proximal joints are fast (shoulder 3.0), distal joints are slow (hand 1.9). When the target moves, the effect propagates from shoulder to hand with a lag, and this **overlap is the first cue for "weight."** Fingers are light and fast (4.2).
 
 ---
 
-## 2. 非通約周波数の選び方 → noise / NoiseIdle
+## 2. Choosing incommensurate frequencies → noise / NoiseIdle
 
-理論は「割り切れない周期の正弦波を足すと二度と同じ形にならない」。実装 `noise(t, seed)`:
+The theory: "add sine waves whose periods don't divide evenly, and the shape never repeats." The implementation, `noise(t, seed)`:
 
 ```js
 sin(t·0.91 + seed)·0.6 + sin(t·1.73 + seed·1.7)·0.3 + sin(t·2.39 + seed·2.3)·0.1
 ```
 
-選び方の指針:
+Guidelines for choosing them:
 
-- **周波数比を有理数近似から外す**。`0.91 / 1.73 / 2.39` は互いに単純な整数比でない。比が単純だと共通周期が短く、目に見えてループする。
-- **振幅は減衰列**(`0.6 / 0.3 / 0.1`)。低周波を主成分に、高周波を微細な揺らぎに。合計 `1.0`。
-- **`seed` で各チャンネルを脱相関**。同じ `noise` を頭の3軸・両腕に使い回すが `seed` を変える(頭: 1.3/4.1/7.7、腕: 2.2/5.6)ので、関節がロックステップで動かない。
-- **`Math.random` は使わない**。乱数だと決定論が壊れテストできない。正弦波の重ね合わせだけで「滑らか・非反復・軽量・決定論的」を全部満たす。
+- **Keep the frequency ratios away from simple rational approximations.** `0.91 / 1.73 / 2.39` are not simple integer ratios of each other. A simple ratio means a short common period, and the loop becomes visible.
+- **Amplitudes form a decaying series** (`0.6 / 0.3 / 0.1`). The low frequency is the main component; the high frequency is fine jitter. They sum to `1.0`.
+- **`seed` decorrelates each channel.** The same `noise` gets reused across the head's 3 axes and both arms, but with different `seed`s (head: 1.3/4.1/7.7, arms: 2.2/5.6), so joints don't move in lockstep.
+- **`Math.random` is never used.** Randomness would break determinism and testability. Sine superposition alone satisfies "smooth, non-repeating, cheap, deterministic" all at once.
 
-`NoiseIdle` は常時オンの「生きた rest」: 体幹の呼吸(`sin(t·1.5)` ≒ 0.24Hz)、頭のドリフト、肩の微小な体重移動。**振幅は小さく**(揺れて見えたら失敗、狙いは「彫像でない」だけ)。状態を持たず `ctx.t + ctx.phase` から純関数的に計算する。
+`NoiseIdle` is the always-on "living rest": torso breathing (`sin(t·1.5)` ≈ 0.24Hz), head drift, small shoulder weight-shift. **Amplitude stays small** (if it reads as visibly swaying, that's a failure — the goal is only "not a statue"). It's stateless, computed purely from `ctx.t + ctx.phase`.
 
 ---
 
-## 3. 層状合成 → TargetBuffer と合成順序・重み
+## 3. Layered composition → TargetBuffer, composition order, and weights
 
-理論は「少数プリミティブを層で重ねる」。実装の核は `TargetBuffer`: 毎フレームの**ターゲット姿勢アキュムレータ**。2つの書き込みモード:
+The theory: "layer a small set of primitives." The core of the implementation is `TargetBuffer`: a per-frame **target-pose accumulator**. Two write modes:
 
-- `add(bone, [dx,dy,dz], w)` — rest 上への**加算オフセット**(idle・emotion・gesture)。層は上書きせず**足し合わせる**。
-- `set(bone, e)` — **ハード上書き**(IK 系: Reach/Place/Pick/ArmAct)。`overridden` 集合に記録し、以降の `add` はそのボーンを無視する(IK が勝つ)。
+- `add(bone, [dx,dy,dz], w)` — an **additive offset** on top of rest (idle, emotion, gesture). Layers don't overwrite; they **sum**.
+- `set(bone, e)` — a **hard overwrite** (the IK family: Reach/Place/Pick/ArmAct). Records the bone in the `overridden` set, so subsequent `add` calls on that bone are ignored (IK wins).
 
-`MANAGED` の各ボーンは毎フレーム `base(bone)`(= `REST` を敷く)から始まり、以下の順で合成される(`MotionEngine.update`):
+Each bone in `MANAGED` starts every frame from `base(bone)` (= laying down `REST`), then composes in this order (`MotionEngine.update`):
 
 ```
 rest(base) → NoiseIdle → EmotionPose → actions[] → (spring smoothing) → constraints[]
 ```
 
-**合成順序と重みの根拠**:
+**Rationale for the composition order and weights**:
 
-1. **idle / emotion は加算**(生存感と感情は常に下地として乗る)。感情層は envelope 重み `ctx.poseW` でスケール。
-2. **gesture も加算**で idle の上に「重なる」(昔は腕を上書きしていて呼吸が消えた)。振幅は `ctx.gain`(0.2–2.5 にクランプ)= キャラ別の「大袈裟さ」。各軸を `±2 rad` にクランプして、gain がバネを吹っ飛ばさないようにする。
-3. **IK アクションは `set`**。手先の到達点は加算では表現できない(関節角の足し算では特定の世界座標に手を置けない)ので、ここだけ最後勝ちの上書き。
-4. **spring smoothing** が最後にターゲットを追う。ここで初めて緩急・overshoot・チェーンのラグが出る。**合成は理想ターゲットを組み、smoothing が物理を与える**、という役割分担。
-5. **constraints[]**(post-pose)は smoothing 後に走る。バネのラグで手先がゴールを追い切れず障害物に食い込む残差を、FK→再IK で押し出す継ぎ目(`makeArmConstraint`)。
-
----
-
-## 4. データ構造
-
-### Pose(出力)
-
-```
-{ [boneName]: [x, y, z] }   // Euler ラジアン, three.js 'XYZ' 順, 正規化 VRM ローカル
-```
-
-`MANAGED` に列挙されたボーンのみ。VRM が持たないボーン(clavicle は任意, 指関節が少ない手など)はレンダラ側で `getNormalizedBoneNode → null` として単に落ちるので、フルセットを列挙して安全。
-
-### rig geometry(IK の入力)
-
-IK 系は upper-arm の**親ローカル座標**で全て受け取る(エンジンを three-free に保つため、ホストが1度だけ測って渡す):
-
-```
-geo = { pU, pL, pH,          // shoulder位置 / elbowオフセット / wristオフセット
-        restU, restL,        // upper/lower の rest ローカル回転(Euler)
-        restW?, pole?,       // wrist rest / elbポール方向
-        basis? }             // ArmAct 用 {out, up, front} 単位ベクトル
-```
-
-`DEFAULT_BODY` は推奨 `BodyProfile`(`elbow:[0.35,2.95]`, `shoulder:2.0`)。opt-in の関節制限としてアクション opts に spread する。
-
-### プリミティブ(アクション)
-
-各アクションは `apply(buf, ctx)` を持ち `t += ctx.dt` で自走、`p = t/dur ≥ 1` で `done` を立てる共通形。`MotionEngine.update` が `done` を毎フレーム filter する。
-
-- **`Gesture`** — 名前付き一発芸。`GESTURES[name](e, p)` が bone デルタを返し、`swingEnv` の envelope `e` を掛けて `buf.add`。
-- **`ArmAct`(v0.11)** — 意図で演技する。関節角デルタでなく「手の目標 + ポール + wrist + curl」を rig 非依存の**腕長単位 × basis**で指定し、`solveTwoBone` で関節を解く(肘の裏返り解消)。
-- **`Reach` / `Place` / `Pick`** — IK 到達 / 重み付き設置 / 掴んで運んで置く一連。`solveTwoBone` を毎フレーム解いて `set`。
-- **`Grip`** — 指の開閉 envelope。制御点 `keys=[[p,curl],…]` を smoothstep 補間。
-- **`Spring` / `QuatSpring`** — smoothing 部品(アクションでなく engine が保持)。
-
-### anticipation/follow-through: `swingEnv`(v0.8)
-
-生の sin ベルに欠けていた「溜め」と「行き過ぎ」を1つの調整可能プリミティブに:
-
-```
-0 →(windup, 逆方向)→ −anticipate →(main swing)→ +1 →(settle)→ −overshoot → 0
-```
-
-`windup/follow` は溜め/follow に使う寿命の割合、`anticipate/overshoot` はその深さ。**同じつまみが後で「リアル(小)↔アニメ的誇張(大)」をダイヤルする継ぎ目**。屈曲主体のジェスチャ(逆反りが出る)は `GESTURE_ENV` で負フェーズを opt-out。
-
-### IK ソルバ `solveTwoBone`(v0.6)
-
-純解析的な**ポールベクトル**2ボーン IK。肘を「shoulder→target 線とポールが張る平面内」に余弦定理で**明示的に**置くので、target が動いても肘がポール側で一貫追従する(最短弧まかせの裏返りを排除)。各ボーンを rest 方向から解方向へ最小twistでスイングするので、**IK∘FK が到達可能シェル上で厳密に恒等**(テスト済)。opt-in で `elbow`(肘角クランプ)・`shoulder`(肩コーン制限)。
+1. **Idle / emotion are additive** (a sense of being alive, and emotion, always ride underneath as a base layer). The emotion layer scales by the envelope weight `ctx.poseW`.
+2. **Gesture is also additive**, "layering" on top of idle (it used to overwrite the arms, which killed breathing). Amplitude is scaled by `ctx.gain` (clamped 0.2–2.5) = the per-character "over-the-topness." Each axis is clamped to `±2 rad` so gain can't blow the spring up.
+3. **IK actions use `set`.** The reach point can't be expressed additively (you can't place a hand at a specific world coordinate by summing joint angles), so this is the one place a last-writer-wins overwrite happens.
+4. **Spring smoothing** tracks the target last. This is where ease/overshoot/chain-lag actually appear. **Composition builds the ideal target; smoothing supplies the physics** — that's the division of labor.
+5. **`constraints[]`** (post-pose) run after smoothing. They're the seam that pushes the hand back out via FK→re-IK when the spring's lag lets it fail to catch up to the goal and dig into an obstacle.
 
 ---
 
-## 5. テスト方針
+## 4. Data structures
 
-`test.mjs` を `node test.mjs`(= `npm test`)で回す。**ブラウザも three.js も要らない**のが設計上の主張。効いている観点:
+### Pose (output)
 
-1. **決定論** — 同一入力で pose ストリームがバイト一致(`Math.random` 不在の証明)。
-2. **well-formed** — 全フレームで `MANAGED` 各ボーンが有限の `[x,y,z]`。
-3. **idle が生きている** — 頭が実際にドリフトする(`>0.01`)が暴れない(`<0.3` に有界)。
-4. **一発芸の整定** — gesture がピークに達し、その後 rest に `<0.08` まで戻る。
-5. **バネの安定性** — 巨大 dt スパイクで NaN/発散しない。
-6. **感情の反映** — `poseW` でスケールした micro-pose が頭に出る。
-7. **IK∘FK = 恒等** — ソルバが手を target に正確に着地させる(到達可能シェル上)。
+```
+{ [boneName]: [x, y, z] }   // Euler radians, three.js 'XYZ' order, normalized VRM local
+```
 
-新しいプリミティブを足すときの原則: **(a) headless で駆動できる**(`apply(buf, ctx)` は数値と plain-data だけ)、**(b) 決定論**(乱数禁止、時刻は `ctx.t/phase` から)、**(c) 不変条件を assert**(整定する/有界/IK が target に乗る/バネが発散しない)。この3点を満たせば、既存パイプラインに再構成なしで挿さる。
+Only bones listed in `MANAGED`. Bones the VRM doesn't have (clavicle is optional; some hands have fewer finger joints) simply fall through as `getNormalizedBoneNode → null` on the renderer side, so it's safe to enumerate the full set.
+
+### Rig geometry (IK input)
+
+The IK family takes everything in the upper-arm's **parent-local frame** (to keep the engine three-free, the host measures it once and passes it in):
+
+```
+geo = { pU, pL, pH,          // shoulder position / elbow offset / wrist offset
+        restU, restL,        // upper/lower rest local rotation (Euler)
+        restW?, pole?,       // wrist rest / elbow pole direction
+        basis? }             // {out, up, front} unit vectors, for ArmAct
+```
+
+`DEFAULT_BODY` is a suggested `BodyProfile` (`elbow:[0.35,2.95]`, `shoulder:2.0`). It's spread into action opts as an opt-in joint limit.
+
+### Primitives (actions)
+
+Each action has an `apply(buf, ctx)` and a common shape: it self-advances via `t += ctx.dt`, and sets `done` once `p = t/dur ≥ 1`. `MotionEngine.update` filters `done` actions every frame.
+
+- **`Gesture`** — a named one-shot bit. `GESTURES[name](e, p)` returns a bone delta, multiplied by the `swingEnv` envelope `e`, and `buf.add`s it.
+- **`ArmAct`** (v0.11) — acts out an intent. Instead of joint-angle deltas, it specifies "hand target + pole + wrist + curl" in rig-independent **arm-length units × basis**, and solves the joints via `solveTwoBone` (no more elbow flip).
+- **`Reach` / `Place` / `Pick`** — IK reach / weight-aware placement / the whole grab-carry-place sequence. Solves `solveTwoBone` every frame and `set`s.
+- **`Grip`** — finger open/close envelope. Control points `keys=[[p,curl],…]` interpolated with smoothstep.
+- **`Spring` / `QuatSpring`** — smoothing components (held by the engine, not an action).
+
+### Anticipation/follow-through: `swingEnv` (v0.8)
+
+The one tunable primitive for the "gather" and "overshoot" the raw sine bell lacked:
+
+```
+0 →(windup, opposite direction)→ −anticipate →(main swing)→ +1 →(settle)→ −overshoot → 0
+```
+
+`windup/follow` are the fraction of the lifetime spent on gather/follow; `anticipate/overshoot` are their depth. **The same knob is later the seam that dials between "realistic (small)" and "anime-exaggerated (large)."** Gestures that are flexion-dominant (where a reverse bend would show) opt out of the negative phase via `GESTURE_ENV`.
+
+### The IK solver `solveTwoBone` (v0.6)
+
+A purely analytic **pole-vector** two-bone IK. It places the elbow **explicitly** using the law of cosines inside "the plane spanned by the shoulder→target line and the pole," so as the target sweeps, the elbow consistently tracks toward the pole side (no more flipping on a shortest-arc accident). Each bone swings from its rest direction to the solved direction via the minimal twist, so **IK∘FK is exactly the identity on the reachable shell** (tested). Opt-in `elbow` (elbow-angle clamp) and `shoulder` (shoulder-cone limit).
+
+---
+
+## 5. Testing approach
+
+`test.mjs`, run via `node test.mjs` (= `npm test`). The design's central claim is **you need neither a browser nor three.js**. What it checks:
+
+1. **Determinism** — the same input produces a byte-identical pose stream (proof there's no `Math.random`).
+2. **Well-formedness** — every `MANAGED` bone is a finite `[x,y,z]` every frame.
+3. **Idle is alive** — the head actually drifts (`>0.01`) but doesn't run wild (bounded `<0.3`).
+4. **One-shot gestures settle** — a gesture reaches its peak and then returns to within `<0.08` of rest.
+5. **Spring stability** — no NaN / divergence under a huge `dt` spike.
+6. **Emotion shows up** — the micro-pose scaled by `poseW` appears on the head.
+7. **IK∘FK = identity** — the solver lands the hand exactly on the target (on the reachable shell).
+
+Principle for adding a new primitive: **(a) it must be drivable headless** (`apply(buf, ctx)` takes only numbers and plain data), **(b) deterministic** (no randomness; time comes from `ctx.t/phase`), **(c) its invariants are asserted** (it settles / stays bounded / IK lands on target / the spring doesn't diverge). Satisfy these three and it plugs into the existing pipeline with no restructuring.
