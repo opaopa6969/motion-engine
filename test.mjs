@@ -678,6 +678,224 @@ const runAct = (name, frames) => { const eng = new MotionEngine(); const a = new
   ok(a.join('|') === b2.join('|'), 'ArmAct is deterministic');
 }
 
+// --- v0.12: full-body-ification — RootAct + upstreamed ArmAct extras --------
+import { RootAct, ROOT_ACTS, rhf } from './index.js';
+
+// 42) v0.12: the 14 upstreamed extra ArmActs joined ARM_ACTS with no name
+// collision against the original 5, and numerically match kamishibai's
+// arm-acts-extra.js (reference re-derived from the read-only source; catches
+// a transcription slip during the port). NOTE: `bones` is omitted on some
+// source entries (throatHand, waveHand's *torso* term aside, etc.) — compared
+// only where the reference defines it.
+{
+  const ORIGINAL_5 = ['clap', 'gutsPose', 'banzai', 'fistToForehead', 'ponder'];
+  const EXTRA_14 = [
+    'cheekHands', 'coverFace', 'throatHand', 'beckon', 'salute', 'waveHand',
+    'raiseHand', 'chestHand', 'handsFolded', 'armsColdClench', 'handOnHip',
+    'fightFists', 'guardFists', 'pointScreen',
+  ];
+  ok(EXTRA_14.every((n) => ARM_ACTS[n]), 'all 14 extra ArmActs are present in ARM_ACTS');
+  ok(EXTRA_14.every((n) => !ORIGINAL_5.includes(n)), 'no name collision with the original 5 ArmActs');
+  ok(Object.keys(ARM_ACTS).length === ORIGINAL_5.length + EXTRA_14.length, 'ARM_ACTS has exactly 5+14 entries');
+
+  // reference, re-derived verbatim from kamishibai tools/vrm/arm-acts-extra.js
+  // (read-only source — this is a COPY for comparison, not an import)
+  const REF = {
+    cheekHands: { dur: 2.6, env: { windup: 0.1, anticipate: 0.05, follow: 0.12, overshoot: 0.03 },
+      bones: (e) => ({ head: [e * 0.08, 0, 0] }),
+      right: (e) => ({ at: [0.10, 0.30, 0.26], pole: [1, -0.6, 0], curl: 0.25 }),
+      left: (e) => ({ at: [0.10, 0.30, 0.26], pole: [1, -0.6, 0], curl: 0.25 }) },
+    coverFace: { dur: 2.8, env: { windup: 0.1, anticipate: 0.08, follow: 0.12, overshoot: 0.03 },
+      bones: (e) => ({ head: [e * 0.18, 0, 0], chest: [e * 0.05, 0, 0] }),
+      right: (e) => ({ at: [0.02, 0.34, 0.30], pole: [1, -0.5, 0], curl: 0.2 }),
+      left: (e) => ({ at: [0.02, 0.34, 0.30], pole: [1, -0.5, 0], curl: 0.2 }) },
+    throatHand: { dur: 1.8, env: { windup: 0.08, anticipate: 0.05, follow: 0.12, overshoot: 0.02 },
+      bones: (e) => ({ head: [e * 0.1, 0, 0] }),
+      right: (e) => ({ at: [0.0, 0.14, 0.28], pole: [1, -0.6, 0], curl: 0.45 }) },
+    beckon: { dur: 1.6, env: { windup: 0.08, anticipate: 0.08, follow: 0.1, overshoot: 0.04 },
+      bones: (e) => ({ head: [-e * 0.05, 0, 0] }),
+      right: (e, p) => ({ at: [0.18, 0.20, 0.42 - Math.max(0, Math.sin(p * Math.PI * 5)) * 0.10], pole: [1, -0.5, 0], curl: 0.3 }) },
+    salute: { dur: 1.7, env: { windup: 0.1, anticipate: 0.1, follow: 0.1, overshoot: 0.04 },
+      bones: (e) => ({ chest: [-e * 0.06, 0, 0], head: [-e * 0.05, 0, 0] }),
+      right: (e) => ({ at: [0.13, 0.50, 0.16], pole: [1, -0.15, 0], curl: 0.15, wrist: [0, 0, -0.4] }) },
+    waveHand: { dur: 2.4, env: { windup: 0.1, anticipate: 0.08, follow: 0.14, overshoot: 0.05 },
+      bones: (e, p) => ({ head: [-e * 0.05, 0, e * 0.06], chest: [0, 0, e * Math.sin(p * Math.PI * 9) * 0.02] }),
+      right: (e, p) => ({ at: [0.22 + Math.sin(p * Math.PI * 9) * 0.16, 0.60, 0.20], pole: [1, -0.2, 0], curl: 0.08 }),
+      left: (e, p) => ({ at: [0.22 - Math.sin(p * Math.PI * 9) * 0.16, 0.60, 0.20], pole: [1, -0.2, 0], curl: 0.08 }) },
+    raiseHand: { dur: 1.6, env: { windup: 0.1, anticipate: 0.1, follow: 0.12, overshoot: 0.05 },
+      bones: (e) => ({ chest: [-e * 0.05, 0, 0], head: [-e * 0.08, 0, 0] }),
+      right: (e) => ({ at: [0.24, 0.82, 0.15], pole: [1, -0.15, 0], curl: 0.15 }) },
+    chestHand: { dur: 2.4, env: { windup: 0.1, anticipate: 0.05, follow: 0.12, overshoot: 0.02 },
+      bones: (e) => ({ head: [e * 0.12, 0, 0] }),
+      right: (e) => ({ at: [-0.04, 0.10, 0.24], pole: [1, -0.6, 0], curl: 0.35 }) },
+    handsFolded: { dur: 3.4, env: { windup: 0.12, anticipate: 0.04, follow: 0.15, overshoot: 0.02 },
+      right: (e) => ({ at: [-0.02, -0.16, 0.20], pole: [0.6, -1, 0.25], curl: 0.25 }),
+      left: (e) => ({ at: [-0.02, -0.16, 0.235], pole: [0.6, -1, 0.25], curl: 0.25 }) },
+    armsColdClench: { dur: 4.0, env: { windup: 0.12, anticipate: 0.05, follow: 0.15, overshoot: 0.02 },
+      bones: (e) => ({ head: [e * 0.06, 0, 0] }),
+      right: (e) => ({ at: [0.07, 0.06, 0.20], pole: [0.15, -1, 0.05], curl: 0.7 }),
+      left: (e) => ({ at: [0.07, 0.06, 0.225], pole: [0.15, -1, 0.05], curl: 0.7 }) },
+    handOnHip: { dur: 4.0, env: { windup: 0.12, anticipate: 0.06, follow: 0.15, overshoot: 0.03 },
+      right: (e) => ({ at: [0.15, -0.30, 0.06], pole: [1, 0.0, 0.1], curl: 0.45 }) },
+    fightFists: { dur: 3.0, env: { windup: 0.14, anticipate: 0.12, follow: 0.12, overshoot: 0.06 },
+      bones: (e) => ({ chest: [-e * 0.05, 0, 0], head: [-e * 0.04, 0, 0] }),
+      right: (e) => ({ at: [0.16, 0.30, 0.28], pole: [1, -0.4, 0], curl: 0.95 }),
+      left: (e) => ({ at: [0.16, 0.30, 0.28], pole: [1, -0.4, 0], curl: 0.95 }) },
+    guardFists: { dur: 2.6, env: { windup: 0.10, anticipate: 0.10, follow: 0.12, overshoot: 0.04 },
+      bones: (e) => ({ chest: [e * 0.04, 0, 0] }),
+      right: (e) => ({ at: [0.03, 0.30, 0.32], pole: [1, -0.4, 0], curl: 0.95 }),
+      left: (e) => ({ at: [0.06, 0.10, 0.28], pole: [0.8, -0.7, 0.2], curl: 0.95 }) },
+    pointScreen: { dur: 2.0, env: { windup: 0.12, anticipate: 0.1, follow: 0.1, overshoot: 0.05 },
+      bones: (e) => ({ head: [-e * 0.1, 0, 0], chest: [-e * 0.04, 0, 0] }),
+      right: (e) => ({ at: [0.12, 0.55, 0.45], pole: [1, -0.2, 0], curl: 0.7 }) },
+  };
+  const deepClose = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  let allMatch = true;
+  const SAMPLES = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95];
+  for (const name of EXTRA_14) {
+    const got = ARM_ACTS[name], ref = REF[name];
+    if (got.dur !== ref.dur || !deepClose(got.env, ref.env)) { allMatch = false; console.error(`    ${name}: dur/env mismatch`); continue; }
+    for (const e of SAMPLES) {
+      for (const p of SAMPLES) {
+        if (ref.bones && (!got.bones || !deepClose(got.bones(e, p), ref.bones(e, p)))) { allMatch = false; console.error(`    ${name}.bones mismatch @ e=${e} p=${p}`); }
+        if (ref.right && (!got.right || !deepClose(got.right(e, p), ref.right(e, p)))) { allMatch = false; console.error(`    ${name}.right mismatch @ e=${e} p=${p}`); }
+        if (ref.left && (!got.left || !deepClose(got.left(e, p), ref.left(e, p)))) { allMatch = false; console.error(`    ${name}.left mismatch @ e=${e} p=${p}`); }
+      }
+    }
+  }
+  ok(allMatch, 'the 14 extra ArmActs numerically match kamishibai arm-acts-extra.js (no transcription slip)');
+}
+
+// 43) v0.12: every ROOT_ACTS entry plays to completion without error and keeps
+// the whole pose (bones + root) finite throughout
+{
+  const runRoot = (name, frames) => {
+    const eng = new MotionEngine();
+    eng.play(new RootAct(name));
+    const out = [];
+    for (let i = 0; i < frames; i++) out.push(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 }));
+    return out;
+  };
+  let allFinite = true;
+  for (const name of Object.keys(ROOT_ACTS)) {
+    const tr = runRoot(name, Math.ceil((ROOT_ACTS[name].dur + 0.5) * 60));
+    for (const p of tr) {
+      for (const b of MANAGED) if (!finite(p[b])) allFinite = false;
+      if (!finite([p.root.y, p.root.z, p.root.tilt, p.root.lookDown])) allFinite = false;
+    }
+  }
+  ok(allFinite, 'every ROOT_ACTS entry plays with a finite bone + root pose throughout');
+  ok(Object.keys(ROOT_ACTS).length === 17, 'ROOT_ACTS has all 17 kamishibai entries');
+}
+
+// 44) RootAct pitch is distributed spine:chest:neck:head = 0.35:0.30:0.20:0.15
+// (kamishibai's CMU-calibrated split), and pitch positive == forward bend in
+// motion-engine's OWN convention (no BOW_SIGN baked in — see the docs note).
+// Uses a large synthetic constant-pitch act (held long enough for the springs
+// to settle) so the ~0.03-amplitude idle-noise layer on spine/chest/head can't
+// meaningfully skew the ratio — a real act like 'bow' peaks too close to idle's
+// own noise floor on 'head' to isolate the split precisely.
+{
+  ROOT_ACTS.__pitchTest = { dur: 3.0, f: () => ({ pitch: 12 }) };
+  const eng = new MotionEngine();
+  eng.play(new RootAct('__pitchTest'));
+  let last;
+  for (let i = 0; i < 150; i++) last = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 });
+  delete ROOT_ACTS.__pitchTest;
+  const v = { spine: last.spine[0], chest: last.chest[0], neck: last.neck[0], head: last.head[0] };
+  ok(v.spine > 0 && v.chest > 0 && v.neck > 0 && v.head > 0, 'pitch: all 4 spine-chain bones bend POSITIVE (forward), matching motion-engine\'s own convention');
+  const ratio = (a, b) => v[a] / v[b];
+  ok(Math.abs(ratio('spine', 'chest') - 0.35 / 0.30) < 0.01, 'spine:chest matches the 0.35:0.30 split');
+  ok(Math.abs(ratio('chest', 'neck') - 0.30 / 0.20) < 0.01, 'chest:neck matches the 0.30:0.20 split');
+  ok(Math.abs(ratio('neck', 'head') - 0.20 / 0.15) < 0.01, 'neck:head matches the 0.20:0.15 split');
+}
+
+// 44b) v0.12: ROOT_ACTS numerically matches kamishibai host.html's ROOT_ACTS
+// (reference re-derived from the read-only source; catches a transcription
+// slip during the port — the same "移植漏れ検出" guard as the ArmAct check
+// above). rhf is the shared primitive (already covered by its own shape test),
+// so entries just call the SAME imported `rhf`, matching kamishibai's inline copy.
+{
+  const REF = {
+    jump: { dur: 0.9, f: (p) => ({ y: Math.abs(Math.sin(p * Math.PI * 2)) * 0.14 }) },
+    hop: { dur: 0.55, f: (p) => ({ y: Math.sin(Math.min(1, p) * Math.PI) * 0.20 }) },
+    stomp: { dur: 1.3, f: (p) => ({ y: -Math.abs(Math.sin(p * Math.PI * 4)) * 0.05 }) },
+    crouch: { dur: 3.2, cam: 'pull', f: (p) => { const e = rhf(p, 0.18, 0.22); return { y: -0.38 * e, pitch: 0.45 * e }; } },
+    kneel: { dur: 3.2, cam: 'pull', f: (p) => { const e = rhf(p, 0.25, 0.25); return { y: -0.50 * e, pitch: 0.30 * e }; } },
+    collapse: { dur: 2.8, cam: 'pull', f: (p) => { const e = rhf(p, 0.15, 0.30); return { y: -0.42 * e, z: -0.15 * e, pitch: -0.25 * e }; } },
+    backstep: { dur: 0.9, f: (p) => { const e = rhf(p, 0.3, 0.3); return { z: -0.14 * e }; } },
+    zukkoke: { dur: 1.1, f: (p) => { const e = rhf(p, 0.2, 0.35); return { tilt: 0.40 * e, y: -0.08 * e }; } },
+    zukkokeLite: { dur: 0.9, f: (p) => { const e = rhf(p, 0.2, 0.4); return { tilt: 0.22 * e }; } },
+    bow: { dur: 1.6, noLook: true, f: (p) => { const e = rhf(p, 0.40, 0.35); return { pitch: 0.26 * e }; } },
+    bowDeep: { dur: 3.2, cam: 'pull', noLook: true, f: (p) => { const e = rhf(p, 0.50, 0.30); return { pitch: 1.5 * e, y: -0.05 * e, sh: 0.12 * e }; } },
+    bowQuick: { dur: 0.9, noLook: true, f: (p) => { const e = rhf(p, 0.18, 0.32); return { pitch: 0.44 * e, hp: 0.1 * e }; } },
+    bowInsolent: { dur: 3.2, noLook: true, pip: true, f: (p) => {
+      if (p < 0.38) { const e = rhf(p / 0.38, 0.3, 0.02); return { hp: -0.16 * e, lookDown: 0.9 * e }; }
+      const q = (p - 0.38) / 0.62, e = rhf(q, 0.14, 0.42);
+      return { pitch: 0.22 * e, hp: 0.36 * e };
+    } },
+    shina: { dur: 4.2, f: (p) => { const e = rhf(p, 0.22, 0.22); return { tilt: 0.12 * e, cr: -0.17 * e, hr: 0.20 * e }; } },
+    bowSorry: { dur: 3.8, cam: 'pull', noLook: true, f: (p) => { const e = rhf(p, 0.55, 0.25); return { pitch: 1.1 * e, sh: 0.3 * e, y: -0.04 * e }; } },
+    doubletake: { dur: 0.8, f: (p) => ({ yaw: Math.sin(p * Math.PI * 3) * 0.30 }) },
+    nodOff: { dur: 4.0, noLook: true, f: (p) => ({ pitch: Math.max(0, Math.sin(p * Math.PI * 2)) * 0.25, hp: 0.1 }) },
+  };
+  const SAMPLES = [0, 0.05, 0.15, 0.25, 0.38, 0.5, 0.65, 0.8, 0.95, 1];
+  let allMatch = true;
+  for (const name of Object.keys(REF)) {
+    const got = ROOT_ACTS[name], ref = REF[name];
+    if (!got) { allMatch = false; console.error(`    ${name}: missing from ROOT_ACTS`); continue; }
+    if (got.dur !== ref.dur || !!got.cam !== !!ref.cam || (got.cam || null) !== (ref.cam || null)
+      || !!got.noLook !== !!ref.noLook || !!got.pip !== !!ref.pip) {
+      allMatch = false; console.error(`    ${name}: dur/cam/noLook/pip metadata mismatch`);
+    }
+    for (const p of SAMPLES) {
+      if (JSON.stringify(got.f(p)) !== JSON.stringify(ref.f(p))) { allMatch = false; console.error(`    ${name}.f(${p}) mismatch`); }
+    }
+  }
+  ok(allMatch, 'ROOT_ACTS numerically + metadata matches kamishibai host.html (no transcription slip)');
+}
+
+// 45) Pose.root carries the whole-body channels as a SEPARATE, non-bone key —
+// present (all-zero) even with no RootAct queued, so an old consumer that only
+// ever reads pose[boneName] (getNormalizedBoneNode-style) never even sees it
+{
+  const eng = new MotionEngine();
+  const p = eng.update(1 / 60, { t: 0, phase: 0, pose: {}, poseW: 0 });
+  ok(p.root && typeof p.root.y === 'number' && typeof p.root.z === 'number'
+    && typeof p.root.tilt === 'number' && typeof p.root.lookDown === 'number',
+    'pose.root exists with numeric y/z/tilt/lookDown even when idle');
+  ok(p.root.y === 0 && p.root.z === 0 && p.root.tilt === 0 && p.root.lookDown === 0, 'pose.root is all-zero with no RootAct playing');
+  ok(!MANAGED.includes('root'), '"root" is not a bone name — never collides with a real bone key');
+}
+
+// 46) old-Pose-only consumer simulation (#7 compat): a consumer written against
+// the PRE-v0.12 bone set (no 'neck', no 'root') ignores both additions and
+// still drives every bone it knows about with finite numbers, unmodified
+{
+  const OLD_BONES = [
+    'spine', 'chest', 'head',
+    'leftShoulder', 'leftUpperArm', 'leftLowerArm', 'leftHand',
+    'rightShoulder', 'rightUpperArm', 'rightLowerArm', 'rightHand',
+    ...FINGER_BONES,
+  ];
+  const eng = new MotionEngine();
+  eng.play(new RootAct('bowDeep'));   // exercises root.y/root channels + trunk bend
+  eng.play(new Gesture('fistPump'));
+  let ok1 = true;
+  for (let i = 0; i < 200; i++) {
+    const pose = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 });
+    // an "old" renderer: apply only bones it recognizes, via a fake getNode
+    // that returns null for anything unknown (exactly like real VRM.humanoid)
+    const fakeGetNode = (b) => (OLD_BONES.includes(b) ? {} : null);
+    for (const b in pose) {
+      const node = fakeGetNode(b);
+      if (node) { if (!Array.isArray(pose[b]) || !finite(pose[b])) ok1 = false; }
+      // unknown keys ('neck', 'root') are silently skipped — no throw, no NaN read
+    }
+  }
+  ok(ok1, 'a pre-v0.12 consumer (unaware of neck/root) drives every bone it knows about unmodified');
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 

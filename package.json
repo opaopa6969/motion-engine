@@ -1,7 +1,7 @@
 {
   "name": "motion-engine",
-  "version": "0.11.0",
-  "description": "Procedural human-motion engine for VRM avatars — natural body action WITHOUT motion capture. Pure, dependency-free, deterministic, headless-testable.",
+  "version": "0.12.0",
+  "description": "Procedural human-motion engine for VRM avatars — natural body action WITHOUT motion capture, now full-body (RootAct). Pure, dependency-free, deterministic, headless-testable.",
   "type": "module",
   "main": "index.js",
   "exports": "./index.js",

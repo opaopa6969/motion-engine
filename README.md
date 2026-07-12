@@ -4,7 +4,7 @@
 
 > Procedural human-motion engine for VRM avatars — **natural body action without motion capture.**
 
-Instead of playing back fixed clips (which read as stiff/repetitive and can't adapt to the actual scene), this engine **synthesizes the pose every frame** from a few primitives that combine. It is **pure**: no `three.js` / VRM / DOM imports, no dependencies, deterministic. Inputs are plain numbers + commands; the output is a plain-data **Pose** (`{ boneName: [x, y, z] }`) that your renderer applies to the VRM bones. Because it's renderer-free, it runs **headless** and is unit-tested in Node.
+Instead of playing back fixed clips (which read as stiff/repetitive and can't adapt to the actual scene), this engine **synthesizes the pose every frame** from a few primitives that combine. It is **pure**: no `three.js` / VRM / DOM imports, no dependencies, deterministic. Inputs are plain numbers + commands; the output is a plain-data **Pose** (`{ boneName: [x, y, z] }`, plus a non-bone `root` key since v0.12 — see [Full-body contract](#full-body-contract-v012)) that your renderer applies to the VRM bones. Because it's renderer-free, it runs **headless** and is unit-tested in Node.
 
 ```js
 import { MotionEngine, Gesture, Reach } from 'motion-engine';
@@ -34,6 +34,7 @@ vrm.update(dt);
 | **`Reach` + `solveTwoBone`** | analytic two-bone **IK** so a hand reaches an actual world point — the thing a fixed clip can't do |
 | **`Place`** (v0.2) | a weight-aware "place a tile" action: windup → torso/shoulder lead + gravity arc → contact (wrist snap + settle sink) → dwell → peel. Style presets make the SAME intent read as そっと置く / ねじ込む / ピシッ / なかなか離さない — the discard as body-language tell |
 | **`Grip` + `Pick`** (v0.5) | fingers. `Grip` is an open/close envelope; `Pick` is the whole discard as ONE motion — reach INTO the own hand, fingers close on a tile, sweep it out over the river with a gravity arc, fingers open to release, retract. Drives arm IK + torso + the finger curl together |
+| **`RootAct`** (v0.12) | full-body acting: jump/hop/stomp, crouch/kneel/collapse, backstep, ずっこけ, the お辞儀(bow) family, しな, nodOff — root translation + spine bend, upstreamed 1:1 from kamishibai's host-side vocabulary. Layers with everything above like any other action |
 
 All contributions composite into one per-bone target buffer; the springs smooth the result (a lead→lag chain gives overlap = weight); a post-pose **constraint pass** is the seam for collision correction.
 
@@ -54,7 +55,37 @@ All contributions composite into one per-bone target buffer; the springs smooth 
   - **post-pose** — `engine.addConstraint(makeArmConstraint({ side, geo, colliders, margin }))` FK's the sprung pose and re-IKs the hand out — catches the residual penetration a goal-clamp can't (the sprung hand lags its goal and cuts a corner mid-swing).
   - `projectOut(point, colliders, margin?, passes?)` — the underlying pure projection, exported for host-side use.
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — forward kinematics (the IK round-trip check).
+- `new RootAct(name, dur?)` — (v0.12) full-body root/trunk acting: `'jump' | 'hop' | 'stomp' | 'crouch' | 'kneel' | 'collapse' | 'backstep' | 'zukkoke' | 'zukkokeLite' | 'bow' | 'bowDeep' | 'bowQuick' | 'bowInsolent' | 'shina' | 'bowSorry' | 'doubletake' | 'nodOff'` — played through `engine.play(...)` exactly like `Gesture`/`ArmAct`. Trunk channels (pitch/hp/sh/yaw/cr/hr) land on `MANAGED` bones (spine/chest/neck/head/shoulders); the true root channels (y/z/tilt/lookDown, none of which are a bone) land on `Pose.root`. See [Full-body contract](#full-body-contract-v012) for the channel table and the sign convention.
+- `rhf(p, rise, fall)` — (v0.12) the "rise-hold-fall" trapezoid envelope most `ROOT_ACTS` entries shape themselves with (ramp 0→1 over `rise`, hold, ramp 1→0 over the last `fall`) — root acting reads as WEIGHT (a slow settle, a held bow) more than `swingEnv`'s spring-like anticipation/overshoot.
+- `ROOT_ACTS` — the exported vocabulary table (`{ dur, cam?, noLook?, pip?, f(p) }` per entry). `cam`/`noLook`/`pip` are camera/expression HINTS, not motion — motion-engine keeps them as plain data (mirrored onto the `RootAct` instance) for a downstream camera/expression layer to interpret; it never reads them itself.
 - helpers: `Spring`, `MANAGED`, `REST`, `FINGER_BONES`, `GESTURE_DUR`, `qFromEulerXYZ`, `qToEulerXYZ` (Euler uses three.js `'XYZ'` order).
+
+## Full-body contract (v0.12)
+
+Through v0.11 this engine was upper-body only — no root translation, no spine bend. That acting vocabulary (jump/crouch/kneel/bow/しな/…) lived instead in the *host* (kamishibai's `tools/vrm/host.html`, `ROOT_ACTS`). v0.12 upstreams it as `RootAct`, so it composes with `Gesture`/`ArmAct` through the same `engine.play(...)` queue instead of living beside them. Two compatibility rules made this additive, not breaking:
+
+1. **`neck` joined `MANAGED`.** `RootAct`'s trunk-bend distribution needs somewhere to put its share of a bow's forward lean, spread over the whole spine chain the way a real back rounds. A consumer that doesn't know about `neck` simply never reads `pose.neck` — nothing else changes shape.
+2. **`root` is a separate, non-bone key on `Pose`**, never a bone name: `pose.root = { y, z, tilt, lookDown }`. A `getNormalizedBoneNode('root')`-style lookup returns `null` for it (exactly like any other unrecognized name), so the common consumer pattern (`for (const bone in pose) { const node = vrm.humanoid.getNormalizedBoneNode(bone); if (node) ... }`) skips it automatically. `pose.root` is present (all-zero) even with no `RootAct` queued, so a host that wants it can read it unconditionally.
+
+**Channel table** (the shape `ROOT_ACTS[name].f(p)` returns; any subset may be present):
+
+| channel | meaning | where it lands |
+|---|---|---|
+| `y`, `z` | root translation (up, forward/back) | `Pose.root.y` / `Pose.root.z` — not a bone |
+| `yaw` | head yaw (e.g. a double-take shake) | `head` bone, y-axis |
+| `pitch` | trunk forward bend | split `spine 0.35 / chest 0.30 / neck 0.20 / head 0.15` (CMU-calibrated, ported verbatim from kamishibai) |
+| `tilt` | whole-body side lean/roll | `Pose.root.tilt` — not a bone (a host applies it to the avatar root, e.g. `scene.rotation.z`) |
+| `sh` | shoulders drawn up symmetrically (肩すぼめ) | `leftShoulder`/`rightShoulder`, z-axis, opposite signs |
+| `hp` | an EXTRA pitch on the head alone, on top of `pitch` | `head` bone, x-axis |
+| `cr` | chest roll (the しな S-curve) | `chest` bone, z-axis |
+| `hr` | head roll (the しな counter-twist) | `head` bone, z-axis |
+| `lookDown` | bridge value 0..1 for the VRM standard expression `lookDown` | `Pose.root.lookDown` — not a bone |
+
+**Sign convention:** `pitch`/`hp` are always **positive = forward bend**, applied unflipped — this already matches this engine's own existing convention (compare `Gesture`'s `lean`, which also uses `+spine`/`+chest` for "lean forward"). kamishibai's `host.html` separately multiplies by a `BOW_SIGN = -1` before writing the bone; that is a quirk of *its own* pipeline (empirically measured 2026-07-12: its physics chain, `xpbd-body`, flips the sign somewhere between target-pose and applied-pose), **not** a motion-engine convention. Any host whose own rig/physics pipeline needs an equivalent correction applies it in *its* application layer, the same way kamishibai does. `cr`/`hr` are likewise unmirrored here — kamishibai additionally flips them by the character's screen-seat side, a staging decision that belongs to the host.
+
+**`cam`/`noLook`/`pip`** metadata on a `ROOT_ACTS` entry (camera pull-back during a deep bow/crouch, suppress eye-tracking while bowing, mark a reaction-inset candidate) are exposed as plain data (`RootAct#cam`/`#noLook`/`#pip`) for a downstream camera/expression layer to read — motion-engine itself never interprets them.
+
+**`schemaVersion`:** not added to `Pose` in v0.12 — the shape is still versioned by the package version, and the `root`-key addition is purely additive (rule 2 above), so there was no compatibility need forcing the issue. Revisit if a future breaking change to `Pose`'s shape needs an explicit marker.
 
 ## Use via CDN (no build step)
 
@@ -74,7 +105,7 @@ Headless: deterministic pose stream, spring stability, gesture settle, and `IK �
 
 ## Status
 
-Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action. **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). **v0.6** rewrites the IK core to a **pole-vector solver**: the elbow is placed explicitly instead of drifting with a shortest-arc swing, killing the "unnatural elbow flip" during reaches — while keeping exact IK∘FK identity.
+Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action, plus full-body acting since v0.12 (see below). **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). **v0.6** rewrites the IK core to a **pole-vector solver**: the elbow is placed explicitly instead of drifting with a shortest-arc swing, killing the "unnatural elbow flip" during reaches — while keeping exact IK∘FK identity.
 
 **v0.6** also smooths the arm chain in **orientation space** (a `QuatSpring`) instead of springing three Euler axes independently — the axes couple/gimbal on a big swing and read as a jolt; the SO(3) spring tracks the target quaternion shortest-path, so reaches swing smoothly (bounded jerk, tested). And it fills the `BodyProfile` seam with an opt-in **elbow joint limit** (`DEFAULT_BODY.elbow`) — a reach stops short of a hyperextended or over-folded arm instead of hitting anatomy-breaking poses.
 
@@ -84,7 +115,11 @@ Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: se
 
 **v0.9** adds a **shoulder-cone joint limit** (`opts.shoulder`, `DEFAULT_BODY.shoulder`) — the upper arm can't swing past an anatomical cone from rest — and extends the collision constraint to the **whole arm**: `makeArmConstraint` now lifts the FOREARM segment (elbow→hand) out of a collider, not just the fingertip, so a limb swept across the body rides over a torso capsule (self-collision, the plain-data path that pairs with xpbd-body). **v0.9.1** makes `QuatSpring` **substep large frame gaps** — a dropped frame / a slow (~5fps) headless render no longer lets the stiffness term fling the arm past its target and flip (caught by in-engine screenshot QA); at 60fps it's exactly one step, so normal playback is byte-identical.
 
-Roadmap (next): (1) **wrist world-leveling** so a placed tile lies flat on the table (rig-specific — tuned in-engine). (2) host wiring: feed real tile/wall/torso colliders + measured elbow pole from `render3d`, bump the importmap to the new tag, and visually tune (the game-side integration).
+**v0.11** adds `ArmAct` — acting BY INTENT (a hand target + a pole + a wrist orientation + a finger curl), not by hand-tuned Euler deltas, so multi-axis arm poses (clap, banzai, ガッツポーズ, …) get anatomically-guaranteed elbows via the same solver as `Reach`/`Place`.
+
+**v0.12** is the **full-body-ification**: `RootAct` upstreams kamishibai's host-side root/trunk acting vocabulary (jump/crouch/kneel/collapse/backstep/ずっこけ/the お辞儀 family/しな/nodOff — 17 acts) as a first-class primitive, and `ARM_ACTS` gains 14 more hand/arm acts (cheekHands/coverFace/throatHand/beckon/salute/waveHand/raiseHand/chestHand/handsFolded/armsColdClench/handOnHip/fightFists/guardFists/pointScreen) upstreamed from kamishibai's own `arm-acts-extra.js`, which had always self-documented as vendored-motion-engine-plus-injection — i.e. it was always meant to land here. See [Full-body contract](#full-body-contract-v012) for the new `Pose.root` key and the compatibility rules that make this additive, not breaking.
+
+Roadmap (next): (1) **wrist world-leveling** so a placed tile lies flat on the table (rig-specific — tuned in-engine). (2) host wiring: feed real tile/wall/torso colliders + measured elbow pole from `render3d`, bump the importmap to the new tag, and visually tune (the game-side integration). (3) retire kamishibai's own vendored `ROOT_ACTS`/`arm-acts-extra.js` copies now that the upstream has them (tracked separately — a host-side change, out of scope here).
 
 ## License
 
