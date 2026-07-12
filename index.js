@@ -87,11 +87,14 @@ export function gripPose(side, curl, opts = {}) {
 // The humanoid bones this framework drives. v0.2: shoulders (clavicle) and hands
 // (wrist) join so the reach chain is shoulder→upperArm→lowerArm→hand — letting
 // the shoulder roll/swing and the wrist aim/snap/twist independently of the
-// elbow. v0.5: the finger bones join for grip. Bones a given VRM lacks (clavicle
-// is OPTIONAL in VRM; some hands have fewer finger joints) are simply dropped by
-// the renderer, so listing them here is safe.
+// elbow. v0.5: the finger bones join for grip. v0.12: 'neck' joins so the
+// full-body RootAct pitch distribution (spine/chest/neck/head, ported from
+// kamishibai's ROOT_ACTS) has somewhere to put its share — the standard VRM
+// humanoid names this bone, so it's a safe addition. Bones a given VRM lacks
+// (clavicle is OPTIONAL in VRM; some hands have fewer finger joints) are simply
+// dropped by the renderer, so listing them here is safe.
 export const MANAGED = Object.freeze([
-  'spine', 'chest', 'head',
+  'spine', 'chest', 'neck', 'head',
   'leftShoulder', 'leftUpperArm', 'leftLowerArm', 'leftHand',
   'rightShoulder', 'rightUpperArm', 'rightLowerArm', 'rightHand',
   ...FINGER_BONES,
@@ -203,10 +206,16 @@ function noise(t, seed) {
  *                          emotion, gestures — they LAYER, unlike the old code
  *                          which overwrote arms wholesale)
  *   set(bone, [x,y,z])     hard override, last writer wins (Phase 2 IK arms)
+ *
+ * v0.12 adds a small NON-bone accumulator, `root`: RootAct's whole-body
+ * channels that aren't a bone rotation at all (root translation `y`/`z`, the
+ * whole-body side lean `tilt`, and the `lookDown` bridge to the expression
+ * system) land here instead of in the bone target map, additive across any
+ * overlapping RootActs — exactly like `add()`, just not FK'd through a bone.
  */
 class TargetBuffer {
-  constructor() { this.t = {}; this.overridden = new Set(); }
-  reset() { this.t = {}; this.overridden.clear(); }
+  constructor() { this.t = {}; this.overridden = new Set(); this.root = { y: 0, z: 0, tilt: 0, lookDown: 0 }; }
+  reset() { this.t = {}; this.overridden.clear(); this.root = { y: 0, z: 0, tilt: 0, lookDown: 0 }; }
   base(bone) { this.t[bone] = restOf(bone).slice(); }
   add(bone, d, w = 1) {
     const a = this.t[bone] || (this.t[bone] = [0, 0, 0]);
@@ -215,6 +224,7 @@ class TargetBuffer {
   }
   set(bone, e) { this.t[bone] = e.slice(); this.overridden.add(bone); }
   get(bone) { return this.t[bone] || ZERO3; }
+  addRoot(ch, v) { this.root[ch] += v; }
 }
 
 // ------------------------------------------------------------- built-in layers
@@ -424,6 +434,116 @@ export const ARM_ACTS = {
     right: (e) => ({ at: [-0.06, 0.26, 0.2], pole: [1, -0.7, 0], curl: 0.3 }),
     left: (e) => ({ at: [-0.3, -0.12, 0.3], pole: [1, -0.9, 0], curl: 0.25 }),
   },
+
+  // ---- v0.12: upstreamed 1:1 from kamishibai tools/vrm/arm-acts-extra.js
+  // (read-only source; not modified there). That file self-documented as
+  // "vendored motion-engine untouched, injected into ARM_ACTS at runtime via
+  // Object.assign" — i.e. it was always meant to land here. Same coordinate
+  // convention as the acts above (at = [out+, up+, front+], chest-basis
+  // meters), same struct (dur/env/bones(e)/right,left(e,p) → {at,pole,curl}).
+  // Teacher info preserved from the source: 演技指導 v3〜v5, バトルポーズ集
+  // (battl1/gurdo), CMU mocap 111_37 for wave frequency.
+
+  // 両手を頬に (ほくほく/泣き) — hands cupping both cheeks
+  cheekHands: {
+    dur: 2.6, env: { windup: 0.1, anticipate: 0.05, follow: 0.12, overshoot: 0.03 },
+    bones: (e) => ({ head: [e * 0.08, 0, 0] }),
+    right: (e) => ({ at: [0.10, 0.30, 0.26], pole: [1, -0.6, 0], curl: 0.25 }),
+    left: (e) => ({ at: [0.10, 0.30, 0.26], pole: [1, -0.6, 0], curl: 0.25 }),
+  },
+  // 両手で顔を覆う (大泣き/照れ隠し/混乱)
+  coverFace: {
+    dur: 2.8, env: { windup: 0.1, anticipate: 0.08, follow: 0.12, overshoot: 0.03 },
+    bones: (e) => ({ head: [e * 0.18, 0, 0], chest: [e * 0.05, 0, 0] }),
+    right: (e) => ({ at: [0.02, 0.34, 0.30], pole: [1, -0.5, 0], curl: 0.2 }),
+    left: (e) => ({ at: [0.02, 0.34, 0.30], pole: [1, -0.5, 0], curl: 0.2 }),
+  },
+  // 喉元に手 (ごくり/泣きそう)
+  throatHand: {
+    dur: 1.8, env: { windup: 0.08, anticipate: 0.05, follow: 0.12, overshoot: 0.02 },
+    bones: (e) => ({ head: [e * 0.1, 0, 0] }),
+    right: (e) => ({ at: [0.0, 0.14, 0.28], pole: [1, -0.6, 0], curl: 0.45 }),
+  },
+  // 手招き (早く早く)
+  beckon: {
+    dur: 1.6, env: { windup: 0.08, anticipate: 0.08, follow: 0.1, overshoot: 0.04 },
+    bones: (e) => ({ head: [-e * 0.05, 0, 0] }),
+    right: (e, p) => ({
+      at: [0.18, 0.20, 0.42 - Math.max(0, Math.sin(p * Math.PI * 5)) * 0.10],
+      pole: [1, -0.5, 0], curl: 0.3,
+    }),
+  },
+  // 敬礼
+  salute: {
+    dur: 1.7, env: { windup: 0.1, anticipate: 0.1, follow: 0.1, overshoot: 0.04 },
+    bones: (e) => ({ chest: [-e * 0.06, 0, 0], head: [-e * 0.05, 0, 0] }),
+    right: (e) => ({ at: [0.13, 0.50, 0.16], pole: [1, -0.15, 0], curl: 0.15, wrist: [0, 0, -0.4] }),
+  },
+  // 手を振る (ばいばい/おーい)。周波数 ≈2Hz は CMU 111_37(実測の手振り)から採取。
+  // 両手を上げて振る — 片手だと画面端のキャラは腕がフレーム外に出るため両手に
+  waveHand: {
+    dur: 2.4, env: { windup: 0.1, anticipate: 0.08, follow: 0.14, overshoot: 0.05 },
+    bones: (e, p) => ({ head: [-e * 0.05, 0, e * 0.06], chest: [0, 0, e * Math.sin(p * Math.PI * 9) * 0.02] }),
+    right: (e, p) => ({
+      at: [0.22 + Math.sin(p * Math.PI * 9) * 0.16, 0.60, 0.20],
+      pole: [1, -0.2, 0], curl: 0.08,
+    }),
+    left: (e, p) => ({
+      at: [0.22 - Math.sin(p * Math.PI * 9) * 0.16, 0.60, 0.20],
+      pole: [1, -0.2, 0], curl: 0.08,
+    }),
+  },
+  // 片手を挙げる (質問/ひらめき/OK)
+  raiseHand: {
+    dur: 1.6, env: { windup: 0.1, anticipate: 0.1, follow: 0.12, overshoot: 0.05 },
+    bones: (e) => ({ chest: [-e * 0.05, 0, 0], head: [-e * 0.08, 0, 0] }),
+    right: (e) => ({ at: [0.24, 0.82, 0.15], pole: [1, -0.15, 0], curl: 0.15 }),
+  },
+  // 胸に手 (じーん/決意)
+  chestHand: {
+    dur: 2.4, env: { windup: 0.1, anticipate: 0.05, follow: 0.12, overshoot: 0.02 },
+    bones: (e) => ({ head: [e * 0.12, 0, 0] }),
+    right: (e) => ({ at: [-0.04, 0.10, 0.24], pole: [1, -0.6, 0], curl: 0.35 }),
+  },
+  // 両手を下腹の前で重ねる (丁寧なお辞儀の正式な手位置。やじろべえ回避)
+  handsFolded: {
+    dur: 3.4, env: { windup: 0.12, anticipate: 0.04, follow: 0.15, overshoot: 0.02 },
+    right: (e) => ({ at: [-0.02, -0.16, 0.20], pole: [0.6, -1, 0.25], curl: 0.25 }),
+    left: (e) => ({ at: [-0.02, -0.16, 0.235], pole: [0.6, -1, 0.25], curl: 0.25 }),   // 手前に重ねる
+  },
+  // 寒さ: 脇を閉めて両手を胸の前で合わせる「祈り」の形(演技指導v5)。肘を体側に
+  // 絞る=こわばり。チビ体型でも破綻しない近距離ターゲット(体型ロバスト性の意図)
+  armsColdClench: {
+    dur: 4.0, env: { windup: 0.12, anticipate: 0.05, follow: 0.15, overshoot: 0.02 },
+    bones: (e) => ({ head: [e * 0.06, 0, 0] }),
+    right: (e) => ({ at: [0.07, 0.06, 0.20], pole: [0.15, -1, 0.05], curl: 0.7 }),
+    left: (e) => ({ at: [0.07, 0.06, 0.225], pole: [0.15, -1, 0.05], curl: 0.7 }),
+  },
+  // 右手を腰に (しなを作る・どや等の土台)
+  handOnHip: {
+    dur: 4.0, env: { windup: 0.12, anticipate: 0.06, follow: 0.15, overshoot: 0.03 },
+    right: (e) => ({ at: [0.15, -0.30, 0.06], pole: [1, 0.0, 0.1], curl: 0.45 }),   // 手は腰骨へ・肘は緩く横に張る
+  },
+  // ファイティングポーズ (バトルポーズ集 battl1 準拠: 両拳を顔の横に)
+  fightFists: {
+    dur: 3.0, env: { windup: 0.14, anticipate: 0.12, follow: 0.12, overshoot: 0.06 },
+    bones: (e) => ({ chest: [-e * 0.05, 0, 0], head: [-e * 0.04, 0, 0] }),
+    right: (e) => ({ at: [0.16, 0.30, 0.28], pole: [1, -0.4, 0], curl: 0.95 }),
+    left: (e) => ({ at: [0.16, 0.30, 0.28], pole: [1, -0.4, 0], curl: 0.95 }),
+  },
+  // ガード (バトルポーズ集 gurdo 準拠: 利き拳を顔の前、逆拳を胸前)
+  guardFists: {
+    dur: 2.6, env: { windup: 0.10, anticipate: 0.10, follow: 0.12, overshoot: 0.04 },
+    bones: (e) => ({ chest: [e * 0.04, 0, 0] }),
+    right: (e) => ({ at: [0.03, 0.30, 0.32], pole: [1, -0.4, 0], curl: 0.95 }),
+    left: (e) => ({ at: [0.06, 0.10, 0.28], pole: [0.8, -0.7, 0.2], curl: 0.95 }),
+  },
+  // スクリーンを指差す (あれ見て)
+  pointScreen: {
+    dur: 2.0, env: { windup: 0.12, anticipate: 0.1, follow: 0.1, overshoot: 0.05 },
+    bones: (e) => ({ head: [-e * 0.1, 0, 0], chest: [-e * 0.04, 0, 0] }),
+    right: (e) => ({ at: [0.12, 0.55, 0.45], pole: [1, -0.2, 0], curl: 0.7 }),
+  },
 };
 
 export class ArmAct {
@@ -518,6 +638,182 @@ export class Gesture {
     // explosion. Small gestures (recoil/nod) scale freely; big ones just cap.
     const g = ctx.gain != null ? Math.max(0.2, Math.min(2.5, ctx.gain)) : 1;
     for (const b in d) buf.add(b, [clamp(d[b][0] * g, -2, 2), clamp(d[b][1] * g, -2, 2), clamp(d[b][2] * g, -2, 2)]);
+  }
+}
+
+// -------------------------------------------------------------- root acts (v0.12)
+//
+// FULL-BODY-IFICATION. Everything above (idle/emotion/Gesture/ArmAct) is upper-
+// body: it never moves the character in the world or bends the spine. The
+// "acting" that made scenes read as PERFORMED — jump/crouch/kneel/collapse,
+// backstep, ずっこけ, the whole お辞儀(bow) family, しな, どうしよう/nodOff — lived
+// entirely in the kamishibai HOST (tools/vrm/host.html's ROOT_ACTS), because it
+// needed root translation + spine bend, which motion-engine didn't drive. This
+// upstreams that vocabulary as a proper L2 primitive: a RootAct is just like a
+// Gesture/ArmAct (queue it with `engine.play`, it's a bone-delta layer + a
+// non-bone `root` layer, both spring-free since the shape is already baked into
+// `f(p)` by `rhf`), so root/trunk acting composes with everything else instead
+// of living beside it.
+//
+// CHANNELS ( = the return shape of a ROOT_ACTS entry's `f(p)` ):
+//   y, z      root TRANSLATION (up, forward/back) — not a bone; consumed via
+//             the Pose's separate `root` key (see MotionEngine.update), so a
+//             host applies it to the avatar's whole-body transform.
+//   yaw       head yaw (bone: `head`), e.g. a double-take shake.
+//   pitch     TRUNK forward bend, distributed spine/chest/neck/head (0.35 /
+//             0.30 / 0.20 / 0.15 — the CMU-calibrated split below) so the back
+//             visibly rounds instead of just the head nodding.
+//   tilt      whole-body SIDE lean/roll — not a bone; via Pose.root.tilt (a
+//             host applies it to the avatar root, e.g. scene.rotation.z).
+//   sh        shoulders drawn up symmetrically (肩すぼめ): bones
+//             `leftShoulder`/`rightShoulder`.
+//   hp        an EXTRA pitch on `head` alone, layered on top of `pitch`
+//             (e.g. bowInsolent's chin-up-then-snap-down beat).
+//   cr        chest ROLL (bone: `chest`, z-axis) — the しな(contrapposto) S-curve.
+//   hr        head ROLL (bone: `head`, z-axis) — the counter-twist of しな.
+//   lookDown  a bridge value (0..1), not a bone: the host feeds it to the VRM
+//             standard expression `lookDown` (黒目を下げる) — via Pose.root.
+//
+// SIGN CONVENTION: `pitch`/`hp` are always POSITIVE = forward bend, and RootAct
+// applies them to spine/chest/neck/head UNFLIPPED — this already matches
+// motion-engine's own existing convention (compare Gesture `lean`, which also
+// uses +spine/+chest for "lean forward"). kamishibai's host.html separately
+// multiplies by a `BOW_SIGN = -1` before writing the bone — that is a quirk of
+// ITS OWN pipeline (empirically measured 2026-07-12: its physics chain,
+// xpbd-body, flips the sign somewhere between target-pose and applied-pose), NOT
+// a motion-engine convention. Any host whose own rig/pipeline needs an
+// equivalent correction applies it in ITS application layer, the same way
+// kamishibai does — motion-engine's contract is just "pitch positive = the
+// avatar bends forward, uninverted, in this engine's own Euler output."
+//
+// `cr`/`hr` are similarly UNMIRRORED here (kamishibai additionally flips them by
+// the character's screen-seat side, `ch.x < 0 ? 1 : -1` — a staging decision
+// that belongs to the host, not this engine).
+//
+// cam/noLook/pip metadata (kamishibai: camera pull-back during a deep bow/crouch,
+// suppress eye-tracking during a bow, cut to a reaction inset) are NOT motion —
+// they're kept as plain data on the ROOT_ACTS entry (and mirrored onto the
+// RootAct instance) for a downstream camera/expression layer (kamishibai's own
+// host, camera-engine, engi-engine) to read and interpret. motion-engine itself
+// never looks at them.
+
+// "rise-hold-fall": p∈[0,1] → an envelope that ramps 0→1 over the first `rise`
+// fraction, holds at 1, then ramps back 1→0 over the last `fall` fraction. This
+// is the one shaping primitive nearly every ROOT_ACTS entry calls internally
+// (with its own rise/fall) instead of using swingEnv — root acting is about
+// WEIGHT (a slow settle into a crouch, a held bow) more than about spring-like
+// anticipation/overshoot, so a plain trapezoid reads truer here.
+export function rhf(p, rise, fall) {
+  if (p < rise) return rise > 0 ? p / rise : 1;
+  if (p > 1 - fall) return fall > 0 ? Math.max(0, (1 - p) / fall) : 0;
+  return 1;
+}
+
+// ROOT_ACTS vocabulary, ported 1:1 from kamishibai tools/vrm/host.html (read-
+// only source; not modified). Each entry: { dur, cam?, noLook?, pip?, f(p) }.
+export const ROOT_ACTS = {
+  jump: { dur: 0.9, f: (p) => ({ y: Math.abs(Math.sin(p * Math.PI * 2)) * 0.14 }) },
+  hop: { dur: 0.55, f: (p) => ({ y: Math.sin(Math.min(1, p) * Math.PI) * 0.20 }) },
+  stomp: { dur: 1.3, f: (p) => ({ y: -Math.abs(Math.sin(p * Math.PI * 4)) * 0.05 }) },
+  // cam:'pull' = a deep crouch/kneel/collapse pushes the head out of frame; the
+  // host pulls the camera back + looks down slightly while it plays, then eases
+  // back to the normal composition when it's done (user acting direction).
+  crouch: { dur: 3.2, cam: 'pull', f: (p) => { const e = rhf(p, 0.18, 0.22); return { y: -0.38 * e, pitch: 0.45 * e }; } },
+  kneel: { dur: 3.2, cam: 'pull', f: (p) => { const e = rhf(p, 0.25, 0.25); return { y: -0.50 * e, pitch: 0.30 * e }; } },
+  collapse: { dur: 2.8, cam: 'pull', f: (p) => { const e = rhf(p, 0.15, 0.30); return { y: -0.42 * e, z: -0.15 * e, pitch: -0.25 * e }; } },
+  backstep: { dur: 0.9, f: (p) => { const e = rhf(p, 0.3, 0.3); return { z: -0.14 * e }; } },
+  zukkoke: { dur: 1.1, f: (p) => { const e = rhf(p, 0.2, 0.35); return { tilt: 0.40 * e, y: -0.08 * e }; } },
+  zukkokeLite: { dur: 0.9, f: (p) => { const e = rhf(p, 0.2, 0.4); return { tilt: 0.22 * e }; } },
+  // ---- お辞儀(bow) family (演技指導/user acting-direction feedback baked in) ----
+  // pitch = trunk forward bend, distributed spine/chest/neck/head below (the back
+  // visibly rounds); hp = an EXTRA pitch on the head alone; sh = shoulders drawn
+  // up (肩をすぼめる). noLook = suppress eye-tracking while bowing (otherwise the
+  // head gets pulled back toward the look target mid-bend, reading as "bent
+  // forward but the face stays up" — wrong). The asymmetric down-fast/up-slow
+  // (or down-slow/up-fast, per act) envelopes are CMU mocap-calibrated: a real
+  // polite bow (CMU 111_02 / 113_02) goes down slowly (≈1.7s), holds (≈0.6s),
+  // and comes back up faster.
+  bow: { dur: 1.6, noLook: true, f: (p) => { const e = rhf(p, 0.40, 0.35); return { pitch: 0.26 * e }; } },
+  bowDeep: {
+    dur: 3.2, cam: 'pull', noLook: true,
+    f: (p) => { const e = rhf(p, 0.50, 0.30); return { pitch: 1.5 * e, y: -0.05 * e, sh: 0.12 * e }; },
+  },
+  // ぺこっ (quick + shallow)
+  bowQuick: { dur: 0.9, noLook: true, f: (p) => { const e = rhf(p, 0.18, 0.32); return { pitch: 0.44 * e, hp: 0.1 * e }; } },
+  // 「謝ればいいんでしょ?」(user acting direction v3): chin lifts + eyes look down
+  // (lookDown) in a defiant half-glance → holds (溜め) → snaps the head down in
+  // one beat → springs right back up. The spine stays straight; it's all head.
+  // `pip` marks it as a candidate for a reaction picture-in-picture cutaway.
+  bowInsolent: {
+    dur: 3.2, noLook: true, pip: true,
+    f: (p) => {
+      if (p < 0.38) {                                    // chin up + look down + hold
+        const e = rhf(p / 0.38, 0.3, 0.02);
+        return { hp: -0.16 * e, lookDown: 0.9 * e };
+      }
+      const q = (p - 0.38) / 0.62, e = rhf(q, 0.14, 0.42);  // snap down → spring back
+      return { pitch: 0.22 * e, hp: 0.36 * e };
+    },
+  },
+  // しな (contrapposto): hips/shoulders lean opposite ways (tilt), the head
+  // counter-tilts further still (hr) — the classic S-curve pose.
+  shina: {
+    dur: 4.2,
+    f: (p) => { const e = rhf(p, 0.22, 0.22); return { tilt: 0.12 * e, cr: -0.17 * e, hr: 0.20 * e }; },
+  },
+  // 恐縮 (deeply apologetic: shoulders draw in, an even slower/deeper bow)
+  bowSorry: {
+    dur: 3.8, cam: 'pull', noLook: true,
+    f: (p) => { const e = rhf(p, 0.55, 0.25); return { pitch: 1.1 * e, sh: 0.3 * e, y: -0.04 * e }; },
+  },
+  doubletake: { dur: 0.8, f: (p) => ({ yaw: Math.sin(p * Math.PI * 3) * 0.30 }) },
+  nodOff: { dur: 4.0, noLook: true, f: (p) => ({ pitch: Math.max(0, Math.sin(p * Math.PI * 2)) * 0.25, hp: 0.1 }) },
+};
+
+/**
+ * A full-body root/trunk action: {dur, f(p) → channels}, played through the same
+ * `engine.play(...)` queue as Gesture/ArmAct. Distributes the trunk channels
+ * (pitch/hp/sh/yaw/cr/hr) onto MANAGED bones, and the true root channels
+ * (y/z/tilt/lookDown, none of which are a bone) into the TargetBuffer's `root`
+ * accumulator, which MotionEngine.update() surfaces as Pose.root — see #7's
+ * compat plan; a consumer that never reads `pose.root` is unaffected.
+ */
+export class RootAct {
+  constructor(name, dur) {
+    this.name = name;
+    this.spec = ROOT_ACTS[name];
+    this.dur = dur || (this.spec && this.spec.dur) || 1.0;
+    this.t = 0;
+    this.done = !this.spec;
+    // camera/expression hints: motion-engine's contract stops at exposing these
+    // as plain data (see the section header above) — never interpreted here.
+    this.cam = this.spec && this.spec.cam;
+    this.noLook = !!(this.spec && this.spec.noLook);
+    this.pip = !!(this.spec && this.spec.pip);
+  }
+  apply(buf, ctx) {
+    if (this.done) return;
+    this.t += ctx.dt;
+    const p = this.t / this.dur;
+    if (p >= 1) { this.done = true; return; }
+    const o = this.spec.f(Math.max(0, p));
+    // trunk forward-bend: spread over the spine chain so the back visibly rounds
+    // (weights ported verbatim from kamishibai's host.html distribution).
+    if (o.pitch) {
+      buf.add('spine', [o.pitch * 0.35, 0, 0]);
+      buf.add('chest', [o.pitch * 0.30, 0, 0]);
+      buf.add('neck', [o.pitch * 0.20, 0, 0]);
+      buf.add('head', [o.pitch * 0.15, 0, 0]);
+    }
+    if (o.hp) buf.add('head', [o.hp, 0, 0]);
+    if (o.sh) { buf.add('leftShoulder', [0, 0, -o.sh]); buf.add('rightShoulder', [0, 0, o.sh]); }
+    if (o.yaw) buf.add('head', [0, o.yaw, 0]);
+    if (o.cr) buf.add('chest', [0, 0, o.cr]);
+    if (o.hr) buf.add('head', [0, 0, o.hr]);
+    if (o.y) buf.addRoot('y', o.y);
+    if (o.z) buf.addRoot('z', o.z);
+    if (o.tilt) buf.addRoot('tilt', o.tilt);
+    if (o.lookDown) buf.addRoot('lookDown', o.lookDown);
   }
 }
 
@@ -1293,6 +1589,20 @@ export class MotionEngine {
     // pipeline runs it every frame so IK reach + obstacle avoidance plug in here
     // without restructuring anything above.
     for (const fn of this.constraints) fn(pose, c);
+
+    // v0.12 full-body contract (#7): root/whole-body channels a RootAct wrote
+    // this frame (translation, side-lean, the lookDown expression bridge) live
+    // under a SEPARATE `root` key, never a bone name — so a consumer that only
+    // ever reads `pose[boneName]` (getNormalizedBoneNode(bone) returns null for
+    // 'root') is completely unaffected; only a host that opts in by reading
+    // `pose.root` sees it. Un-sprung: each RootAct already shapes its own
+    // rise/hold/fall via `rhf` inside `f(p)`, so there's nothing to smooth here.
+    pose.root = {
+      y: buf.root.y,
+      z: buf.root.z,
+      tilt: buf.root.tilt,
+      lookDown: clamp(buf.root.lookDown, 0, 1),
+    };
     return pose;
   }
 }
