@@ -12,7 +12,7 @@ The theory's three pillars, and the implementation that carries each:
 | superposition of incommensurate sine waves | `noise()` / `NoiseIdle` |
 | layered composition of a small set of primitives | `TargetBuffer` + the `MotionEngine.update` pipeline |
 
-The design constraints this all sits under are the same as the README: **pure / zero dependencies / no `three.js`, VRM, or DOM imports / deterministic (`Math.random` forbidden) / unit-testable headless**. The output is a plain-data Pose `{ boneName: [x,y,z] }` (radians, normalized VRM local space, three.js `'XYZ'` Euler order). The host-side renderer applies this to the bones.
+The design constraints this all sits under are the same as the README: **pure / zero dependencies / no `three.js`, VRM, or DOM imports / deterministic (`Math.random` forbidden) / unit-testable headless**. The output is a plain-data Pose with bone rotations `{ boneName: [x,y,z] }` (radians, normalized VRM local space, three.js `'XYZ'` Euler order) plus the non-bone `root` record `{ y, z, tilt, lookDown }`. The host-side renderer applies bone records to the VRM and may apply `root` to its avatar root / expression layer.
 
 ---
 
@@ -114,10 +114,11 @@ rest(base) → NoiseIdle → EmotionPose → actions[] → (spring smoothing) �
 ### Pose (output)
 
 ```
-{ [boneName]: [x, y, z] }   // Euler radians, three.js 'XYZ' order, normalized VRM local
+{ [boneName]: [x, y, z], root: { y, z, tilt, lookDown } }
+// bone values: Euler radians, three.js 'XYZ' order, normalized VRM local
 ```
 
-Only bones listed in `MANAGED`. Bones the VRM doesn't have (clavicle is optional; some hands have fewer finger joints) simply fall through as `getNormalizedBoneNode → null` on the renderer side, so it's safe to enumerate the full set.
+Bone keys are listed in `MANAGED`; `root` is deliberately not a bone name and is always present, zeroed when no `RootAct` is active. Bones the VRM doesn't have (clavicle is optional; some hands have fewer finger joints) simply fall through as `getNormalizedBoneNode → null` on the renderer side, so it's safe to enumerate the full set. A host that enumerates all pose keys must skip `root` or check for a bone node before applying rotation.
 
 ### Rig geometry (IK input)
 
@@ -163,7 +164,7 @@ A purely analytic **pole-vector** two-bone IK. It places the elbow **explicitly*
 `test.mjs`, run via `node test.mjs` (= `npm test`). The design's central claim is **you need neither a browser nor three.js**. What it checks:
 
 1. **Determinism** — the same input produces a byte-identical pose stream (proof there's no `Math.random`).
-2. **Well-formedness** — every `MANAGED` bone is a finite `[x,y,z]` every frame.
+2. **Well-formedness** — every `MANAGED` bone and every `Pose.root` channel is finite every frame.
 3. **Idle is alive** — the head actually drifts (`>0.01`) but doesn't run wild (bounded `<0.3`).
 4. **One-shot gestures settle** — a gesture reaches its peak and then returns to within `<0.08` of rest.
 5. **Spring stability** — no NaN / divergence under a huge `dt` spike.
