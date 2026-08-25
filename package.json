@@ -8,7 +8,8 @@
   "files": ["index.js", "LICENSE", "README.md"],
   "engines": { "node": ">=14" },
   "scripts": {
-    "test": "node test.mjs"
+    "test": "node test.mjs",
+    "bench": "node bench.mjs"
   },
   "keywords": ["vrm", "three", "motion", "animation", "ik", "inverse-kinematics", "procedural", "avatar", "spring"],
   "license": "MIT",

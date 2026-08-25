@@ -109,6 +109,31 @@ node test.mjs     # or: npm test
 
 Headless: deterministic pose stream, spring stability, gesture settle, and `IK ∘ FK = identity` (the solver lands the hand on the target).
 
+## Benchmark
+
+```sh
+node bench.mjs    # or: npm run bench
+```
+
+Headless micro-benchmark of the per-frame hot path (`MotionEngine.update`) and its primitives, measured with `process.hrtime.bigint()` on Node 20, `linux/x64`. Methodology: 30k warmup iters, then 5×100k iters, report min/median ns/op (`fps-budget` = `1e9 / (1/60) / ns-per-op`, the headroom multiple of 60fps if this op were the whole frame).
+
+| operation | baseline | optimized | Δ |
+|---|---|---|---|
+| `MotionEngine.update` (idle)              | 17.8 µs | 9.6 µs  | **-46%** |
+| `MotionEngine.update` (1 Gesture)         | 18.0 µs | 9.3 µs  | **-48%** |
+| `MotionEngine.update` (idle, `reusePose`) | 17.8 µs | 8.2 µs  | **-54%** |
+| `Spring.update` (1 axis)                  |  17 ns  | 17 ns   | unchanged |
+| `TargetBuffer reset+base` (42 bones)       |  5.0 µs | 3.8 µs  | **-24%** |
+
+**What changed (v0.13 perf):** the per-frame hot path no longer allocates.
+- `TargetBuffer` pre-seeds one mutable 3-array per managed bone and resets in place — `reset()` also reinitializes to rest values, folding a redundant 42-iteration zero-then-overwrite loop into one pass.
+- `NoiseIdle` / `EmotionPose` use a scalar-arg `add3()` so the always-on layers never allocate a `[x,y,z]` literal per `add()`.
+- `update()` reuses one `ctx`-shaped object across frames instead of `Object.assign`.
+- The output loop uses in-place `qFromEulerXYZInto` / `qToEulerXYZInto` for the QuatSpring arm chain, eliminating 4 quat allocations per frame.
+- **`new MotionEngine({ reusePose: true })`** opts into reusing the returned `pose` object + per-bone arrays across frames (42 fewer array allocations + 1 object per frame). OFF by default — the unit tests hold multiple frames' poses simultaneously (which a reused `pose` would corrupt); a renderer that consumes `pose` within the frame and discards the reference can opt in.
+
+For comparison: `@pixiv/three-vrm`'s `vrm.update` (spring bone + bone updates, model-dependent) is measured at ~95µs–3.2ms/frame ([three-vrm PR #1539](https://github.com/pixiv/three-vrm/pull/1539), MIT, retrieved 2026-08-16); three.js `AnimationMixer.update` + `Skeleton.update` for a 25-bone model is hundreds of µs/frame ([three.js discourse #58196](https://discourse.threejs.org/t/optimization-of-large-amounts-100-1000-of-skinned-meshes-cpu-bottlenecks/58196), retrieved 2026-08-16). motion-engine's `update` at ~8–10µs/frame (42 bones, pure scalar) is well under one AnimationMixer's worth — it leaves the full 16.67ms 60fps budget essentially untouched.
+
 ## Status
 
 Used by [netmahg](https://github.com/opaopa6969/netmahg) (3D mahjong). Scope: seated upper-body action, plus full-body acting since v0.12 (see below). **v0.3** adds a richer one-shot gesture set (recoil / crossArms / nod / shrug / lean / smirkTilt) so reactions and tells read as body language. **v0.4** adds `ctx.gain` — a per-avatar reaction amplitude (大袈裟さ) the host feeds from personality, so the *same* gesture reads as a reserved flinch or full-slapstick recoil depending on character (recoil is also beefed up to suit). **v0.6** rewrites the IK core to a **pole-vector solver**: the elbow is placed explicitly instead of drifting with a shortest-arc swing, killing the "unnatural elbow flip" during reaches — while keeping exact IK∘FK identity.

@@ -214,15 +214,48 @@ function noise(t, seed) {
  * overlapping RootActs — exactly like `add()`, just not FK'd through a bone.
  */
 class TargetBuffer {
-  constructor() { this.t = {}; this.overridden = new Set(); this.root = { y: 0, z: 0, tilt: 0, lookDown: 0 }; }
-  reset() { this.t = {}; this.overridden.clear(); this.root = { y: 0, z: 0, tilt: 0, lookDown: 0 }; }
-  base(bone) { this.t[bone] = restOf(bone).slice(); }
+  constructor() {
+    this.t = Object.create(null);
+    this.overridden = new Set();
+    this.root = { y: 0, z: 0, tilt: 0, lookDown: 0 };
+    // pre-seed one mutable 3-array per managed bone so reset()/base() never
+    // allocate (the per-frame hot path writes into these in place).
+    for (const b of MANAGED) this.t[b] = [0, 0, 0];
+    this._keys = MANAGED;
+  }
+  reset() {
+    // Reinitialize every managed bone's target to its REST value in place.
+    // The old code did reset() (zero everything) THEN a separate for-loop of
+    // base(b) over MANAGED — but base() immediately overwrote the zeros, so
+    // the zero pass was pure waste. Folding base into reset cuts one full
+    // 42-iteration loop from the per-frame hot path.
+    const t = this.t;
+    for (const b of this._keys) {
+      const r = REST[b] || ZERO3;
+      const a = t[b];
+      a[0] = r[0]; a[1] = r[1]; a[2] = r[2];
+    }
+    this.overridden.clear();
+    this.root.y = 0; this.root.z = 0; this.root.tilt = 0; this.root.lookDown = 0;
+  }
+  base(bone) {
+    const r = restOf(bone);
+    const a = this.t[bone];
+    a[0] = r[0]; a[1] = r[1]; a[2] = r[2];
+  }
   add(bone, d, w = 1) {
-    const a = this.t[bone] || (this.t[bone] = [0, 0, 0]);
+    const a = this.t[bone];
     if (this.overridden.has(bone)) return;   // an override won this bone
     a[0] += d[0] * w; a[1] += d[1] * w; a[2] += d[2] * w;
   }
-  set(bone, e) { this.t[bone] = e.slice(); this.overridden.add(bone); }
+  // scalar-arg variant: lets the always-on layers (NoiseIdle/EmotionPose) add
+  // without allocating a [x,y,z] literal every frame. w defaults to 1.
+  add3(bone, x, y, z, w = 1) {
+    const a = this.t[bone];
+    if (this.overridden.has(bone)) return;
+    a[0] += x * w; a[1] += y * w; a[2] += z * w;
+  }
+  set(bone, e) { const a = this.t[bone]; a[0] = e[0]; a[1] = e[1]; a[2] = e[2]; this.overridden.add(bone); }
   get(bone) { return this.t[bone] || ZERO3; }
   addRoot(ch, v) { this.root[ch] += v; }
 }
@@ -236,11 +269,11 @@ class NoiseIdle {
   apply(buf, ctx) {
     const t = ctx.t + ctx.phase;
     const breath = Math.sin(t * 1.5);                       // ~0.24 Hz
-    buf.add('spine', [breath * 0.014, 0, 0]);
-    buf.add('chest', [breath * 0.012, 0, 0]);
-    buf.add('head', [noise(t, 1.3) * 0.03, noise(t, 4.1) * 0.07, noise(t, 7.7) * 0.04]);
-    buf.add('leftUpperArm', [0, 0, noise(t, 2.2) * 0.03]);
-    buf.add('rightUpperArm', [0, 0, -noise(t, 5.6) * 0.03]);
+    buf.add3('spine', breath * 0.014, 0, 0);
+    buf.add3('chest', breath * 0.012, 0, 0);
+    buf.add3('head', noise(t, 1.3) * 0.03, noise(t, 4.1) * 0.07, noise(t, 7.7) * 0.04);
+    buf.add3('leftUpperArm', 0, 0, noise(t, 2.2) * 0.03);
+    buf.add3('rightUpperArm', 0, 0, -noise(t, 5.6) * 0.03);
   }
 }
 
@@ -251,11 +284,11 @@ class EmotionPose {
     const p = ctx.pose || {};
     const w = ctx.poseW != null ? ctx.poseW : 1;
     if (!w) return;
-    buf.add('head', [(p.headPitch || 0) * w, (p.headYaw || 0) * w, (p.headRoll || 0) * w]);
-    buf.add('chest', [(p.chestLift || 0) * w, 0, 0]);
+    buf.add3('head', (p.headPitch || 0) * w, (p.headYaw || 0) * w, (p.headRoll || 0) * w);
+    buf.add3('chest', (p.chestLift || 0) * w, 0, 0);
     if (p.shoulder) {
-      buf.add('leftUpperArm', [0, 0, p.shoulder * w]);
-      buf.add('rightUpperArm', [0, 0, -p.shoulder * w]);
+      buf.add3('leftUpperArm', 0, 0, p.shoulder * w);
+      buf.add3('rightUpperArm', 0, 0, -p.shoulder * w);
     }
   }
 }
@@ -894,6 +927,17 @@ export function qFromEulerXYZ(e) {
     c1 * c2 * c3 - s1 * s2 * s3,
   ];
 }
+// in-place variant — writes the 4 quat components into `out` (length-4) instead
+// of allocating. Used by the update() output loop for the arm-chain bones
+// (QuatSpring target), eliminating 4 array allocations per frame.
+function qFromEulerXYZInto(e, out) {
+  const c1 = Math.cos(e[0] / 2), c2 = Math.cos(e[1] / 2), c3 = Math.cos(e[2] / 2);
+  const s1 = Math.sin(e[0] / 2), s2 = Math.sin(e[1] / 2), s3 = Math.sin(e[2] / 2);
+  out[0] = s1 * c2 * c3 + c1 * s2 * s3;
+  out[1] = c1 * s2 * c3 - s1 * c2 * s3;
+  out[2] = c1 * c2 * s3 + s1 * s2 * c3;
+  out[3] = c1 * c2 * c3 - s1 * s2 * s3;
+}
 export function qToEulerXYZ(q) {
   const x = q[0], y = q[1], z = q[2], w = q[3];
   const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -908,6 +952,22 @@ export function qToEulerXYZ(q) {
   if (Math.abs(m13) < 0.9999999) { ex = Math.atan2(-m23, m33); ez = Math.atan2(-m12, m11); }
   else { ex = Math.atan2(m32, m22); ez = 0; }
   return [ex, ey, ez];
+}
+// in-place variant of qToEulerXYZ — writes [ex,ey,ez] into `out` (a length-3
+// array) instead of allocating. Used by the reusePose path to avoid per-bone
+// array allocations in the output loop.
+function qToEulerXYZInto(q, out) {
+  const x = q[0], y = q[1], z = q[2], w = q[3];
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2;
+  const yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
+  const m11 = 1 - (yy + zz), m12 = xy - wz, m13 = xz + wy;
+  const m22 = 1 - (xx + zz), m23 = yz - wx;
+  const m32 = yz + wx, m33 = 1 - (xx + yy);
+  out[1] = Math.asin(clamp(m13, -1, 1));
+  if (Math.abs(m13) < 0.9999999) { out[0] = Math.atan2(-m23, m33); out[2] = Math.atan2(-m12, m11); }
+  else { out[0] = Math.atan2(m32, m22); out[2] = 0; }
 }
 
 // rotation vector (axis*angle) ↔ quaternion, for orientation-space smoothing.
@@ -1519,6 +1579,20 @@ export class MotionEngine {
     // off here later. The 'bulk' self-collider feeds the Phase 4 constraint pass.
     this.body = opts.body || null;
     this._buf = new TargetBuffer();
+    this._c = { dt: 0, phase: 0, t: 0, pose: null, poseW: 0, gain: undefined }; // reused per frame
+    // When the host consumes pose within the same frame and discards the
+    // reference (the typical renderer path: apply to VRM bones, no caching), we
+    // can reuse one pose object + one 3-array per bone across frames and avoid
+    // 42 array allocations + 1 object per frame. OFF by default — the unit
+    // tests hold multiple frames' poses simultaneously (trace.push), which a
+    // reused pose would corrupt. Hosts that don't cache poses opt in.
+    this._reusePose = !!opts.reusePose;
+    if (this._reusePose) {
+      this._pose = {};
+      this._poseArr = {};                       // bone → reusable [x,y,z]
+      for (const b of MANAGED) this._poseArr[b] = [0, 0, 0];
+    }
+    this._qT = [0, 0, 0, 0];                    // reusable quat target for QuatSpring.update
     this.springs = {};          // bone → [Spring x3]  (per-axis, most bones)
     this.qsprings = {};         // bone → QuatSpring    (arm chain, orientation space)
     for (const b of MANAGED) {
@@ -1566,25 +1640,70 @@ export class MotionEngine {
    * @returns {Object<string, number[]>}
    */
   update(dt, ctx) {
-    const c = Object.assign({ dt, phase: 0, t: 0 }, ctx);
+    // Reuse a single ctx-shaped object across frames instead of Object.assign
+    // (the per-frame hot path). We copy only the fields layers read:
+    // dt, phase, t, pose, poseW, gain — that's the full surface (grep ctx.).
+    const c = this._c;
+    c.dt = dt;
+    if (ctx) {
+      c.phase = ctx.phase != null ? ctx.phase : 0;
+      c.t = ctx.t != null ? ctx.t : 0;
+      c.pose = ctx.pose != null ? ctx.pose : null;
+      c.poseW = ctx.poseW != null ? ctx.poseW : 0;
+      c.gain = ctx.gain;                       // may be undefined — layers default to 1
+    } else {
+      c.phase = 0; c.t = 0; c.pose = null; c.poseW = 0; c.gain = undefined;
+    }
     const buf = this._buf;
-    buf.reset();
-    for (const b of MANAGED) buf.base(b);
+    buf.reset();   // reset() now also reinitializes every bone to rest in place
 
     this.idle.apply(buf, c);
     this.emotion.apply(buf, c);
     for (const a of this.actions) a.apply(buf, c);
     this.actions = this.actions.filter((a) => !a.done);
 
-    const pose = {};
-    for (const b of MANAGED) {
-      const tgt = buf.get(b);
-      if (QUAT_SMOOTH.has(b)) {                 // orientation-space smoothing (arm chain)
-        pose[b] = qToEulerXYZ(this.qsprings[b].update(dt, qFromEulerXYZ(tgt)));
-      } else {
-        const sp = this.springs[b];
-        pose[b] = [sp[0].update(dt, tgt[0]), sp[1].update(dt, tgt[1]), sp[2].update(dt, tgt[2])];
+    let pose;
+    if (this._reusePose) {
+      pose = this._pose;
+      const arrs = this._poseArr;
+      const qT = this._qT;
+      for (const b of MANAGED) {
+        const tgt = buf.get(b);
+        const a = arrs[b];
+        if (QUAT_SMOOTH.has(b)) {
+          qFromEulerXYZInto(tgt, qT);
+          qToEulerXYZInto(this.qsprings[b].update(dt, qT), a);
+        } else {
+          const sp = this.springs[b];
+          a[0] = sp[0].update(dt, tgt[0]);
+          a[1] = sp[1].update(dt, tgt[1]);
+          a[2] = sp[2].update(dt, tgt[2]);
+        }
+        pose[b] = a;
       }
+      // root sub-object: reuse one stable object too (it's read via pose.root.y etc.)
+      const r = this._poseRoot || (this._poseRoot = { y: 0, z: 0, tilt: 0, lookDown: 0 });
+      r.y = buf.root.y; r.z = buf.root.z; r.tilt = buf.root.tilt; r.lookDown = clamp(buf.root.lookDown, 0, 1);
+      pose.root = r;
+    } else {
+      pose = {};
+      const qT = this._qT;
+      for (const b of MANAGED) {
+        const tgt = buf.get(b);
+        if (QUAT_SMOOTH.has(b)) {                 // orientation-space smoothing (arm chain)
+          qFromEulerXYZInto(tgt, qT);
+          pose[b] = qToEulerXYZ(this.qsprings[b].update(dt, qT));
+        } else {
+          const sp = this.springs[b];
+          pose[b] = [sp[0].update(dt, tgt[0]), sp[1].update(dt, tgt[1]), sp[2].update(dt, tgt[2])];
+        }
+      }
+      pose.root = {
+        y: buf.root.y,
+        z: buf.root.z,
+        tilt: buf.root.tilt,
+        lookDown: clamp(buf.root.lookDown, 0, 1),
+      };
     }
 
     // constraint / collision-correction pass (Phase 4): empty for now, but the
@@ -1592,19 +1711,12 @@ export class MotionEngine {
     // without restructuring anything above.
     for (const fn of this.constraints) fn(pose, c);
 
-    // v0.12 full-body contract (#7): root/whole-body channels a RootAct wrote
-    // this frame (translation, side-lean, the lookDown expression bridge) live
-    // under a SEPARATE `root` key, never a bone name — so a consumer that only
-    // ever reads `pose[boneName]` (getNormalizedBoneNode(bone) returns null for
+    // pose.root was assigned above (either a fresh object or the reused one),
+    // carrying the v0.12 full-body channels a RootAct wrote this frame under a
+    // SEPARATE `root` key — never a bone name, so a consumer that only ever
+    // reads `pose[boneName]` (getNormalizedBoneNode(bone) returns null for
     // 'root') is completely unaffected; only a host that opts in by reading
-    // `pose.root` sees it. Un-sprung: each RootAct already shapes its own
-    // rise/hold/fall via `rhf` inside `f(p)`, so there's nothing to smooth here.
-    pose.root = {
-      y: buf.root.y,
-      z: buf.root.z,
-      tilt: buf.root.tilt,
-      lookDown: clamp(buf.root.lookDown, 0, 1),
-    };
+    // `pose.root` sees it.
     return pose;
   }
 }

@@ -108,6 +108,31 @@ node test.mjs     # or: npm test
 
 Headless: 決定論的な pose ストリーム、バネの安定性、ジェスチャの整定、`IK ∘ FK = identity`(ソルバが手を target に着地させる)を検証。
 
+## ベンチマーク
+
+```sh
+node bench.mjs    # or: npm run bench
+```
+
+毎フレームのホットパス(`MotionEngine.update`)と主要プリミティブの headless マイクロベンチマーク。Node 20 / `linux/x64` で `process.hrtime.bigint()` により計測。手法: 30k warmup 後 5×100k iters、min/median ns/op を報告(`fps-budget` = `1e9 / (1/60) / ns-per-op`、この op がフレーム全体だと仮定した 60fps 予算に対する余裕倍率)。
+
+| 操作 | baseline | 最適化後 | Δ |
+|---|---|---|---|
+| `MotionEngine.update` (idle)              | 17.8 µs | 9.6 µs  | **-46%** |
+| `MotionEngine.update` (1 Gesture)         | 18.0 µs | 9.3 µs  | **-48%** |
+| `MotionEngine.update` (idle, `reusePose`) | 17.8 µs | 8.2 µs  | **-54%** |
+| `Spring.update` (1 axis)                  |  17 ns  | 17 ns   | 変わらず |
+| `TargetBuffer reset+base` (42 bones)       |  5.0 µs | 3.8 µs  | **-24%** |
+
+**何を変えたか (v0.13 perf):** 毎フレームのホットパスがアロケートしなくなった。
+- `TargetBuffer` は管理ボーンごとに1つの再利用可能な3要素配列を事前確保し、in-place で reset する — `reset()` が rest 値での再初期化も兼ねることで、ゼロクリア→上書きの冗長な42回ループを1パスに畳んだ。
+- `NoiseIdle` / `EmotionPose` はスカラー引数版 `add3()` を使い、常時レイヤが `add()` ごとに `[x,y,z]` リテラルをアロケートしない。
+- `update()` は `Object.assign` ではなく1つの `ctx` 型オブジェクトをフレーム間で再利用する。
+- 出力ループは QuatSpring の腕チェーンに対して in-place 版 `qFromEulerXYZInto` / `qToEulerXYZInto` を使い、毎フレーム4つの quat 配列生成を消した。
+- **`new MotionEngine({ reusePose: true })`** で、返却される `pose` オブジェクトとボーンごとの配列をフレーム間で再利用するモードを選べる(毎フレーム42個の配列生成 + 1オブジェクトを削減)。デフォルトは OFF — ユニットテストは複数フレームの pose を同時に保持する(再利用 `pose` だと壊れる)ため。そのフレーム内で `pose` を消費して参照を捨てるレンダラは opt-in できる。
+
+比較参考: `@pixiv/three-vrm` の `vrm.update`(spring bone + ボーン更新、モデル依存)は ~95µs〜3.2ms/frame で計測される([three-vrm PR #1539](https://github.com/pixiv/three-vrm/pull/1539), MIT, 取得 2026-08-16)。three.js の `AnimationMixer.update` + `Skeleton.update` は 25ボーンモデルで数百µs/frame([three.js discourse #58196](https://discourse.threejs.org/t/optimization-of-large-amounts-100-1000-of-skinned-meshes-cpu-bottlenecks/58196), 取得 2026-08-16)。motion-engine の `update` は ~8〜10µs/frame(42ボーン、純スカラー)で、AnimationMixer 1体分より遥かに軽く、16.67ms の 60fps 予算をほぼ無傷で残す。
+
 ## Status
 
 [netmahg](https://github.com/opaopa6969/netmahg)(3D 麻雀)で使用中。スコープ: 着席状態の上半身アクション、v0.12 以降は全身の演技も(下記)。**v0.3** は一発芸ジェスチャセットを拡充(recoil / crossArms / nod / shrug / lean / smirkTilt)し、リアクションや仕草が身体言語として読めるようにした。**v0.4** は `ctx.gain` を追加 — アバターごとのリアクション振幅(大袈裟さ)をホストが性格から与えることで、*同じ*ジェスチャがキャラによって控えめなひるみにも全力のスラップスティックな仰け反りにも読める(recoil 自体もそれに合わせて強化)。**v0.6** は IK コアを**ポールベクトル・ソルバ**に書き直した: 肘が最短弧まかせでドリフトする代わりに明示的に配置され、reach 中の「不自然な肘の裏返り」をなくす — 厳密な IK∘FK 恒等は維持したまま。
