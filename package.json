@@ -5,14 +5,37 @@
   "type": "module",
   "main": "index.js",
   "exports": "./index.js",
-  "files": ["index.js", "LICENSE", "README.md"],
-  "engines": { "node": ">=14" },
+  "files": [
+    "index.js",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
   "scripts": {
-    "test": "node test.mjs",
+    "test": "node test.mjs && node mcp/test.mjs",
     "bench": "node bench.mjs"
   },
-  "keywords": ["vrm", "three", "motion", "animation", "ik", "inverse-kinematics", "procedural", "avatar", "spring"],
+  "keywords": [
+    "vrm",
+    "three",
+    "motion",
+    "animation",
+    "ik",
+    "inverse-kinematics",
+    "procedural",
+    "avatar",
+    "spring"
+  ],
   "license": "MIT",
   "author": "opaopa6969",
-  "repository": { "type": "git", "url": "https://github.com/opaopa6969/motion-engine.git" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opaopa6969/motion-engine.git"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
 }
