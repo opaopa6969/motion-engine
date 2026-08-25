@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "exports": "./index.js",
-  "files": ["index.js"],
+  "files": ["index.js", "LICENSE", "README.md"],
+  "engines": { "node": ">=14" },
   "scripts": {
     "test": "node test.mjs"
   },
