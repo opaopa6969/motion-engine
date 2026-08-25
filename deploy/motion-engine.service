@@ -1,0 +1,14 @@
+[Unit]
+Description=motion-engine MCP server
+After=network.target
+
+[Service]
+Type=simple
+Environment=PORT=9201
+EnvironmentFile=-/home/opa/volta-secrets/motion-engine.env
+ExecStart=/home/opa/motion-engine/run.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

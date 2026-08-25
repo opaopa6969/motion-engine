@@ -1,0 +1,25 @@
+{
+  "id": "motion-engine",
+  "name": "motion-engine",
+  "description": "VRMアバター向け手続き型モーションエンジン。Pose生成・アクション語彙・2ボーンIK・指gripをMCP経由で公開。",
+  "type": "node",
+  "hostname": "motion-engine.unlaxer.org",
+  "port": 9201,
+  "host": "192.168.1.50",
+  "runtime": "systemd",
+  "exec_start": "/home/opa/motion-engine/run.sh",
+  "user": "opa",
+  "auth": "minRole:MEMBER",
+  "health_check": "/healthz",
+  "tags": ["mcp", "vrm", "motion", "avatar", "ik", "game-workspace"],
+  "repo_url": "https://github.com/opaopa6969/motion-engine",
+  "mcp": {
+    "enabled": true,
+    "port": 9201,
+    "path": "/mcp",
+    "namespace": "motion",
+    "min_role": "MEMBER",
+    "timeoutMs": 110000,
+    "description": "VRMアバター向け手続き型モーションエンジン。Pose生成・アクション再生・IK・grip"
+  }
+}
