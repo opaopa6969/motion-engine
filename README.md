@@ -101,10 +101,20 @@ Through v0.11 this engine was upper-body only — no root translation, no spine 
 </script>
 ```
 
+## MCP
+
+motion-engine is available as an [MCP](https://modelcontextprotocol.io/) server (namespace `motion`) via the [volta-mcp](https://github.com/opaopa6969/volta-mcp) facade. Tools: `step`, `play`, `clear`, `solve_ik`, `grip_pose`, `list_acts`. Resources: `motion://spec`, `motion://guide`, `motion://pose_schema`. See [docs/mcp/DESIGN.md](docs/mcp/DESIGN.md) for the full spec.
+
+```sh
+node mcp/server.mjs --http 9201   # PORT env also supported
+node mcp/test.mjs                  # e2e tests
+```
+
 ## Test
 
 ```sh
 node test.mjs     # or: npm test
+node mcp/test.mjs # MCP e2e
 ```
 
 Headless: deterministic pose stream, spring stability, gesture settle, and `IK ∘ FK = identity` (the solver lands the hand on the target).

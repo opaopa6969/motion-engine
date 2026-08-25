@@ -100,10 +100,20 @@ v0.11 までこのエンジンは上半身専用だった — ルート移動も
 </script>
 ```
 
+## MCP
+
+motion-engine は [MCP](https://modelcontextprotocol.io/) サーバ（namespace `motion`）として [volta-mcp](https://github.com/opaopa6969/volta-mcp) ファサード経由で利用可能。tools: `step`, `play`, `clear`, `solve_ik`, `grip_pose`, `list_acts`。resources: `motion://spec`, `motion://guide`, `motion://pose_schema`。詳細は [docs/mcp/DESIGN.md](docs/mcp/DESIGN.md)。
+
+```sh
+node mcp/server.mjs --http 9201   # PORT 環境変数も対応
+node mcp/test.mjs                  # e2e テスト
+```
+
 ## テスト
 
 ```sh
 node test.mjs     # or: npm test
+node mcp/test.mjs # MCP e2e
 ```
 
 Headless: 決定論的な pose ストリーム、バネの安定性、ジェスチャの整定、`IK ∘ FK = identity`(ソルバが手を target に着地させる)を検証。

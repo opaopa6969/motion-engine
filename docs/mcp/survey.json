@@ -1,0 +1,193 @@
+{
+  "repo": "motion-engine",
+  "surveyed_at": "2026-08-21T23:27:35Z",
+  "kind": "library",
+  "summary": "VRM アバター向け手続き型モーションエンジン。three.js/VRM/DOM 非依存・依存ゼロ・決定論的で、毎フレーム Pose ({bone:[x,y,z]} + root:{y,z,tilt,lookDown}) を合成して返す純粋計算ライブラリ。Gesture/Reach/Place/Pick/ArmAct/RootAct/IK(colveTwoBone)/衝突補正などを single-file index.js に実装。",
+  "decision": "library-serve",
+  "decision_reason": "依存ゼロ・即時終了の計算関数だが、game-workspace 内で 8+ の隣接エンジン(boujin/habit/affect/sotai/morpho/xpbd/physio/sumi)が motion-engine の Pose 形式に依存する事実上のハブ。catalog 未登録・MCP なし。各エンジンの integration/*.mjs が直接 import で結合しているため、MCP 経由で Pose 生成・アクション実行・語彙一覧を公開すれば、エージェントがアバターモーションを組立可能になる。常駐の価値は薄いが、他サービスとの composability と発見性が高い。起動 1 秒以内・状態なしのため常駐は過剰だが、語彙や Pose 形式の spec 配信(resource/skill)だけでも volta 参加の価値があるため library-serve とする。",
+  "existing": {
+    "http_api": false,
+    "cli": false,
+    "mcp": false,
+    "healthz": false,
+    "volta_manifest": false,
+    "hosted_url": null
+  },
+  "proposed_namespace": "motion",
+  "capabilities": [
+    {
+      "verb": "Pose を1フレーム進める",
+      "kind": "tool",
+      "name": "step",
+      "io": "{dt, ctx:{t, phase, pose?, poseW?, gain?}} → Pose ({bone:[x,y,z], root:{y,z,tilt,lookDown}})",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "index.js:1642 MotionEngine.update"
+    },
+    {
+      "verb": "アクションをキューに積む",
+      "kind": "tool",
+      "name": "play",
+      "io": "{action:{type:'gesture'|'reach'|'place'|'pick'|'armAct'|'rootAct'|'grip', name, ...params}} → {queued:true}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "index.js:1607 MotionEngine.play"
+    },
+    {
+      "verb": "キューを空にする",
+      "kind": "tool",
+      "name": "clear",
+      "io": "{} → {cleared:true}",
+      "side_effect": "write",
+      "long_running": false,
+      "maps_to": "index.js:1608 MotionEngine.clear"
+    },
+    {
+      "verb": "2ボーン IK を解く",
+      "kind": "tool",
+      "name": "solve_ik",
+      "io": "{pU,pL,pH,restU,restL,target, pole?, elbow?, shoulder?} → {upperQ:[x,y,z,w], lowerQ:[x,y,z,w]}",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "index.js:1065 solveTwoBone"
+    },
+    {
+      "verb": "指の grip Pose を生成する",
+      "kind": "tool",
+      "name": "grip_pose",
+      "io": "{side:'left'|'right', curl:0..1+, flexSign?} → {bone:[x,y,z]}",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "index.js:72 gripPose"
+    },
+    {
+      "verb": "アクション語彙を一覧する",
+      "kind": "tool",
+      "name": "list_acts",
+      "io": "{} → {gestures:[...], arm_acts:[...], root_acts:[...], place_styles:[...]}",
+      "side_effect": "none",
+      "long_running": false,
+      "maps_to": "index.js:303/433/748 GESTURES/ARM_ACTS/ROOT_ACTS/PLACE_STYLES"
+    },
+    {
+      "verb": "能力の仕様",
+      "kind": "resource",
+      "name": "spec",
+      "uri": "motion://spec"
+    },
+    {
+      "verb": "使い方",
+      "kind": "resource",
+      "name": "guide",
+      "uri": "motion://guide"
+    },
+    {
+      "verb": "Pose 形式と全身契約の参照",
+      "kind": "resource",
+      "name": "pose_schema",
+      "uri": "motion://pose_schema"
+    },
+    {
+      "verb": "motion-engine を他エンジンと組み合わせる手順",
+      "kind": "skill",
+      "name": "compose_motion",
+      "locality": "global"
+    }
+  ],
+  "composition_examples": [
+    "sotai__plan → motion__solve_ik → xpbd__solve → motion__step のように、骨格計画→IK→物理→フレーム更新を直列に繋ぐ",
+    "affect__valence → motion__play(gesture:'recoil', gain=2.0) → motion__step のように、感情値を gain に写像してリアクションを生成",
+    "physio__breath_phase → motion__step(ctx:{pose:breathNudge}) のように、生理層の変調を EmotionPose 入力に重ねる"
+  ],
+  "dependencies": [
+    {
+      "repo": "xpbd-body",
+      "direction": "depends_on",
+      "capability": "xpbd-body が motion-engine の Pose を物理入力として受け取る(逆方向依存。motion-engine は Pose を出す側)",
+      "exists_now": false,
+      "note": "xpbd-body survey.json に motion-engine depends_on として記録済み。相手は volta 未登録"
+    },
+    {
+      "repo": "boujin",
+      "direction": "depends_on",
+      "capability": "integration/motion-boujin.mjs が Pose → fromMotionPose → solvePose で消費",
+      "exists_now": false,
+      "note": "boujin survey.json に記録済み。相手は volta 未登録"
+    },
+    {
+      "repo": "habit-engine",
+      "direction": "depends_on",
+      "capability": "integration/habit-motion.mjs が MotionEngine の Pose に変調を重ねる",
+      "exists_now": true,
+      "note": "habit-engine survey.json に記録済み。相手は volta 未登録"
+    },
+    {
+      "repo": "affect-engine",
+      "direction": "depends_on",
+      "capability": "integration/triangle-physio-affect-motion.mjs が anxiety で motion の Pose を REST に引き寄せる",
+      "exists_now": false,
+      "note": "affect-engine survey.json に provides_to として記録済み。相手は volta 未登録"
+    },
+    {
+      "repo": "sotai-engine",
+      "direction": "provides_to",
+      "capability": "SotaiPlan の skeleton/joints を消費して Pose を付ける(将来。現状は sotai 側が motion-engine の Pose 形式に依存)",
+      "exists_now": false,
+      "note": "sotai-engine survey.json に motion-engine provides_to と記録。相手は volta 未登録"
+    },
+    {
+      "repo": "morpho-engine",
+      "direction": "provides_to",
+      "capability": "toBodySpec が body spec を出力し motion/kinema が消費(将来。motion の Reach/solveTwoBone 入力)",
+      "exists_now": false,
+      "note": "morpho-engine survey.json に motion-engine provides_to と記録。相手は volta 未登録"
+    },
+    {
+      "repo": "physio-engine",
+      "direction": "depends_on",
+      "capability": "integration/physio-motion.mjs / fullstack-avatar.mjs が motion-engine と組み合わさる",
+      "exists_now": false,
+      "note": "physio-engine が motion-engine を import。相手は volta 未登録"
+    },
+    {
+      "repo": "sumi-engine",
+      "direction": "depends_on",
+      "capability": "Pose — kinema と同じシリアライズ形式",
+      "exists_now": false,
+      "note": "sumi-engine survey.json に記録済み。相手は volta 未登録"
+    },
+    {
+      "repo": "netmahg",
+      "direction": "depends_on",
+      "capability": "public/js/motion-engine.js (vendored) を 3D 麻雀本体が消費",
+      "exists_now": false,
+      "note": "本リポジトリの主要ユーザー。volta 未登録"
+    }
+  ],
+  "library_serve": {
+    "needed": true,
+    "new_work": [
+      "healthz エンドポイント(/healthz が 200)",
+      "PORT 環境変数 bind(0.0.0.0)",
+      "Streamable HTTP の /mcp",
+      "MCP サーバ実装(tools/prompts/resources の露出。状態なし engine インスタンスを要求ごとに作成、またはセッション保持)",
+      "volta.service.json manifest",
+      "systemd user unit(常駐ではなく on-demand でも可だが、volta 規約に従う)"
+    ],
+    "runtime": "node",
+    "estimated_effort": "M"
+  },
+  "risks": [
+    "MotionEngine はステートフル(キュー・スプリング)。MCP のステートレス呼び出しモデルと相性が悪い。セッション単位の engine インスタンス保持か、クライアント側で状態を持ち毎フレーム送り返す設計が必要",
+    "毎フレーム step を呼ぶモデルは MCP(1 call = 往復) だとレイテンシが乗る。実際のレンダラは import で使うため、MCP 経由の step はデバッグ/検証用に限る",
+    "IK の geo(pU/pL/pH/restU/restL) はホストが VRM から測定する必要があり、MCP tool だけでは完結しない(測定支援 tool か guide が必要)",
+    "CDN タグ(v0.1.0)と package.json(0.12.0)が不整合(spec-motion-engine.md 未確定事項)。MCP 公開前にタグ運用を決める"
+  ],
+  "open_questions": [
+    "MotionEngine のステート(キュー/スプリング)を MCP セッションでどう保持するか(stateful session を許容するか、クライアント側で Pose+内部状態を保持して毎回送るか)",
+    "step tool はデバッグ/検証用途に割り切るか、それともエージェントがリアルタイム生成をドライブする想定か",
+    "IK の geo 測定を支援する tool(例: VRM から pU/pL/pH/restU/restL を取り出す)を motion-engine 側で持つか、別エンジン(例: morpho)に委ねるか",
+    "kamishibai が持つ vendored ROOT_ACTS/arm-acts-extra.js の退役(Roadmap #3)と MCP 化の優先順位",
+    "語彙(GESTURES/ARM_ACTS/ROOT_ACTS)の追加・チューニングを MCP 経由で受け入れるか(現状はコードに埋め込み)"
+  ]
+}
