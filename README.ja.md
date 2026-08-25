@@ -14,6 +14,8 @@ engine.play(new Gesture('fistPump'));         // 一発芸ジェスチャ
 
 // 毎フレーム:
 const pose = engine.update(dt, { t, phase, pose: emotionPose, poseW });
+// `phase`(デフォルト 0): NoiseIdle 用のアバターごとの時間オフセット —
+// アイドルの呼吸/微動をアバター間で位相をずらし、群衆が一斉に呼吸するのを避ける。
 for (const bone in pose) {
   const node = vrm.humanoid.getNormalizedBoneNode(bone);
   if (node) node.rotation.set(pose[bone][0], pose[bone][1], pose[bone][2]);
@@ -40,21 +42,24 @@ vrm.update(dt);
 
 ## API
 
-- `new MotionEngine()` → `update(dt, ctx)` が Pose を返す。`play(action)`、`syncFrom(pose)`、`addConstraint(fn)`。`ctx.gain`(v0.4, デフォルト 1, 0.2–2.5 にクランプ)は一発芸ジェスチャの振幅をスケールする — キャラごとの大袈裟さ。
-- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` と(v0.3)`'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`。`env`(v0.8)は予備動作/follow-through を調整する(`{windup, follow, anticipate, overshoot}`; `{windup:0}` = 素のベル型)。
+- `new MotionEngine()` → `update(dt, ctx)` が Pose を返す。`play(action)`、`clear()`(v0.12、キューされたアクションを破棄)、`syncFrom(pose)`、`addConstraint(fn)`。`ctx.gain`(v0.4, デフォルト 1, 0.2–2.5 にクランプ)は一発芸ジェスチャの振幅をスケールする — キャラごとの大袈裟さ。
+- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump' | 'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt' | 'sigh' | 'exhale' | 'clap' | 'gutsPose' | 'banzai' | 'fistToForehead' | 'headShakeRue' | 'ponder'`。`env`(v0.8)は予備動作/follow-through を調整する(`{windup, follow, anticipate, overshoot}`; `{windup:0}` = 素のベル型)。
 - `swingEnv(p, opts?)`(v0.8) — 予備動作+follow-through エンベロープ(逆方向への windup → スイング → rest を通り過ぎて整定)。ジェスチャ/捨て牌の「溜め」を支える再利用可能なプリミティブ。`Place`/`Pick` は `opts.anticipate`(溜めの深さ、デフォルト 0.3)を取る。
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach。`geo = { pU, pL, pH, restU, restL }` はホストがリグから測定して渡す。`opts.pole`(v0.6)— **肘**が押し出される親フレーム方向(着席時の reach なら下後方); デフォルトはリグ本来の rest 曲げ。
-- `new Place(side, geo, target, opts?)` — v0.2 の重さを考慮した設置。`geo` は `restW`(手首)+ `pole` も取る。`opts.style` ∈ `PLACE_STYLES`(`gentle`/`snap`/`linger`/`jam`/`timid`)。`{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` のいずれかで上書き可能。肩と手首も駆動する。
+- `new Place(side, geo, target, opts?)` — v0.2 の重さを考慮した設置。`geo` は `restW`(手首)+ `pole` も取る。`opts.style` ∈ `PLACE_STYLES`(`gentle`/`snap`/`linger`/`jam`/`timid`)。`{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim, anticipate }` のいずれかで上書き可能(`anticipate` については下記 `swingEnv` 参照)。肩と手首も駆動する。
 - `new Grip(side, opts?)` —(v0.5)独立した指の開閉。`opts = { dur, keys:[[p,curl],…], flexSign, base, span }`; curl 0 = 開, 1 = 握り。`keys` は smoothstep 補間の制御点。
 - `new Pick(side, geo, opts)` —(v0.5)捨て牌全体を1つのタイムラインで: 自分の手の中へ reach → 指が閉じる → 払い出す → 指が開く → 引く。`opts = { grab:[x,y,z], place:[x,y,z], dur?, style?, flexSign?, …Place の上書き }`; `grab`/`place` は上腕の親ローカルフレームでのターゲット。牌のメッシュを運ぶため、ホスト側が毎フレーム手のボーンを追従させる。
 - `gripPose(side, curl, opts?)` → `{ bone:[x,y,z] }` — grip 量に対する指の Euler。`opts.flexSign`(±1)は逆方向に曲がるリグ向けに curl 方向を全体反転する。
 - `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — 純解析的な**ポールベクトル** IK(v0.6)。`opts.pole` は肘の位置を明示的に(余弦定理で)決めるので、target がスイープしても最短弧まかせで裏返ることなく一貫して追従する。到達可能シェル上で厳密な IK∘FK 恒等。`opts.elbow = [min,max]` は肘の内角をクランプする(opt-in の関節制限)。
-- `DEFAULT_BODY`(v0.6)— 推奨 `BodyProfile`(`{ elbow:[0.35,2.95] }`)。`elbow` を `Reach`/`Place`/`Pick` の opts に spread して関節制限を有効化する。
+- `DEFAULT_BODY`(v0.6)— 推奨 `BodyProfile`(`{ elbow:[0.35,2.95], shoulder:2.0 }`)。`elbow`/`shoulder` を `Reach`/`Place`/`Pick` の opts に spread して関節制限を有効化する。
 - **collision**(v0.7): reach する手を障害物(テーブル・牌の壁・川の牌・相手の手・自分の胴体)の外に保つ。コライダーは IK ターゲットフレームでのプレーンデータ — `{shape:'plane',n,o}` / `{shape:'sphere',c,r}` / `{shape:'capsule',a,b,r}`(それぞれ独自の `margin` を追加可能)。使い方は2通り、両方重ねてよい:
   - **goal-clamp** — `opts.colliders`(配列 or フレームごとの `()=>array`)を `Reach`/`Place`/`Pick` に渡すと、手のゴールが毎フレーム各コライダーの外側に投影されるので、手が表面上に乗る/沿って滑る。ホスト側の配線不要で安価。
   - **post-pose** — `engine.addConstraint(makeArmConstraint({ side, geo, colliders, margin }))` はバネ後のポーズを FK し、手を再 IK で押し出す — goal-clamp では取れない残差(バネがゴールにラグして、スイング中にコーナーを突っ切ってしまうケース)を捕まえる。
   - `projectOut(point, colliders, margin?, passes?)` — その裏側にある純粋な投影処理。ホスト側での利用のために export。
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — 順運動学(IK の往復チェック)。
+- `new ArmAct(name, geo, dur?)` — (v0.11) `ARM_ACTS` の意図ベース腕演技。手のターゲット、ポール、手首の向き、指のカールを同じ2ボーン IKで解く。
+- `ARM_ACTS` — 腕演技の export 語彙。`clap`/`gutsPose`/`banzai`/`fistToForehead`/`ponder` と追加14種を含む。
+- `makeArmConstraint({ side, geo, colliders, margin })` — `engine.addConstraint` に渡す post-pose 腕衝突制約。
 - `new RootAct(name, dur?)` —(v0.12)全身の体幹/ルート演技: `'jump' | 'hop' | 'stomp' | 'crouch' | 'kneel' | 'collapse' | 'backstep' | 'zukkoke' | 'zukkokeLite' | 'bow' | 'bowDeep' | 'bowQuick' | 'bowInsolent' | 'shina' | 'bowSorry' | 'doubletake' | 'nodOff'`。`Gesture`/`ArmAct` と同じく `engine.play(...)` で再生する。体幹チャネル(pitch/hp/sh/yaw/cr/hr)は `MANAGED` のボーン(spine/chest/neck/head/肩)へ、真のルートチャネル(y/z/tilt/lookDown。どれもボーンではない)は `Pose.root` へ着地する。チャネル表と符号規約は [全身契約](#全身契約-v012) を参照。
 - `rhf(p, rise, fall)` —(v0.12)`ROOT_ACTS` の各エントリが自前で使う「立上-保持-戻り」の台形エンベロープ(最初の `rise` で 0→1、保持、最後の `fall` で 1→0)。全身の演技は `swingEnv` のようなバネ的な予備動作/行き過ぎより「重さ」(ゆっくり沈み込む、お辞儀を保持する)として読ませたいので、素の台形の方が実感に合う。
 - `ROOT_ACTS` — export された語彙テーブル(エントリごとに `{ dur, cam?, noLook?, pip?, f(p) }`)。`cam`/`noLook`/`pip` はカメラ/表情への**ヒント**でありモーションではない — motion-engine はこれをプレーンデータのまま保持する(`RootAct` インスタンスにもミラーする)だけで、下流のカメラ/表情レイヤーが解釈する。エンジン自体は一切参照しない。

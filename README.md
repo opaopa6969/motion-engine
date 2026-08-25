@@ -14,6 +14,9 @@ engine.play(new Gesture('fistPump'));         // a one-shot gesture
 
 // each frame:
 const pose = engine.update(dt, { t, phase, pose: emotionPose, poseW });
+// `phase` (default 0): per-avatar time offset for NoiseIdle — drifts the idle
+// breathing/micro-motion out of phase across avatars so a crowd doesn't breathe
+// in lockstep.
 for (const bone in pose) {
   const node = vrm.humanoid.getNormalizedBoneNode(bone);
   if (node) node.rotation.set(pose[bone][0], pose[bone][1], pose[bone][2]);
@@ -40,21 +43,24 @@ All contributions composite into one per-bone target buffer; the springs smooth 
 
 ## API
 
-- `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `syncFrom(pose)`, `addConstraint(fn)`. `ctx.gain` (v0.4, default 1, clamped 0.2–2.5) scales one-shot gesture amplitude — the per-avatar 大袈裟さ.
-- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump'` and (v0.3) `'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt'`. `env` (v0.8) tunes anticipation/follow-through (`{windup, follow, anticipate, overshoot}`; `{windup:0}` = the plain bell).
+- `new MotionEngine()` → `update(dt, ctx)` returns a Pose; `play(action)`, `clear()` (v0.12, drops the queued actions), `syncFrom(pose)`, `addConstraint(fn)`. `ctx.gain` (v0.4, default 1, clamped 0.2–2.5) scales one-shot gesture amplitude — the per-avatar 大袈裟さ.
+- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump' | 'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt' | 'sigh' | 'exhale' | 'clap' | 'gutsPose' | 'banzai' | 'fistToForehead' | 'headShakeRue' | 'ponder'`. `env` (v0.8) tunes anticipation/follow-through (`{windup, follow, anticipate, overshoot}`; `{windup:0}` = the plain bell).
 - `swingEnv(p, opts?)` (v0.8) — the anticipation+follow-through envelope (windup opposite → swing → settle past rest); the reusable primitive behind gesture/discard "溜め". `Place`/`Pick` take `opts.anticipate` (gather depth, default 0.3).
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach; `geo = { pU, pL, pH, restU, restL }` measured from the rig by the host. `opts.pole` (v0.6) — a parent-frame direction the **elbow** is pushed toward (down-and-back for a seated reach); defaults to the rig's natural rest bend.
-- `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim }` override. Drives shoulder + wrist too.
+- `new Place(side, geo, target, opts?)` — v0.2 weight-aware placement. `geo` also takes `restW` (wrist) + `pole`. `opts.style` ∈ `PLACE_STYLES` (`gentle`/`snap`/`linger`/`jam`/`timid`); any of `{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim, anticipate }` override (see `swingEnv` below for `anticipate`). Drives shoulder + wrist too.
 - `new Grip(side, opts?)` — (v0.5) standalone finger open/close. `opts = { dur, keys:[[p,curl],…], flexSign, base, span }`; curl 0 = open, 1 = grip. `keys` are smoothstep-interpolated control points.
 - `new Pick(side, geo, opts)` — (v0.5) the full discard in one timeline: reach into the own hand → fingers close → sweep out → fingers open → retract. `opts = { grab:[x,y,z], place:[x,y,z], dur?, style?, flexSign?, …Place overrides }`; `grab`/`place` are targets in the upper-arm parent-local frame. The host follows the hand bone each frame to carry the tile mesh.
 - `gripPose(side, curl, opts?)` → `{ bone:[x,y,z] }` — finger Euler for a grip amount. `opts.flexSign` (±1) globally flips curl direction for a rig that bends the wrong way.
 - `solveTwoBone(pU, pL, pH, restU, restL, target, opts?)` → `{ upperQ, lowerQ }` — pure analytic **pole-vector** IK (v0.6). `opts.pole` places the elbow explicitly (law of cosines) so it tracks consistently as the target sweeps instead of flipping to a shortest-arc accident; exact IK∘FK identity on the reachable shell. `opts.elbow = [min,max]` clamps the interior elbow angle (opt-in joint limit).
-- `DEFAULT_BODY` (v0.6) — a suggested `BodyProfile` (`{ elbow:[0.35,2.95] }`); spread its `elbow` into `Reach`/`Place`/`Pick` opts to enable the joint limit.
+- `DEFAULT_BODY` (v0.6) — a suggested `BodyProfile` (`{ elbow:[0.35,2.95], shoulder:2.0 }`); spread its `elbow`/`shoulder` into `Reach`/`Place`/`Pick` opts to enable the joint limits.
 - **collision** (v0.7): keep the reaching hand out of obstacles (table, tile wall, river tiles, another hand, own torso). Colliders are plain data in the IK target frame — `{shape:'plane',n,o}` / `{shape:'sphere',c,r}` / `{shape:'capsule',a,b,r}` (each may add its own `margin`). Two ways to use, layer both:
   - **goal-clamp** — pass `opts.colliders` (array or per-frame `()=>array`) to `Reach`/`Place`/`Pick`; the hand's goal is projected outside every collider each frame, so the hand rests on / slides along the surface. Cheap, needs no host wiring.
   - **post-pose** — `engine.addConstraint(makeArmConstraint({ side, geo, colliders, margin }))` FK's the sprung pose and re-IKs the hand out — catches the residual penetration a goal-clamp can't (the sprung hand lags its goal and cuts a corner mid-swing).
   - `projectOut(point, colliders, margin?, passes?)` — the underlying pure projection, exported for host-side use.
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — forward kinematics (the IK round-trip check).
+- `new ArmAct(name, geo, dur?)` — (v0.11) intent-driven arm acting from `ARM_ACTS`: hand target, pole, wrist orientation, and finger curl, solved through the same two-bone IK.
+- `ARM_ACTS` — the exported arm-acting vocabulary, including `clap`, `gutsPose`, `banzai`, `fistToForehead`, `ponder` and the 14 extra arm acts.
+- `makeArmConstraint({ side, geo, colliders, margin })` — post-pose arm collision constraint for `engine.addConstraint`.
 - `new RootAct(name, dur?)` — (v0.12) full-body root/trunk acting: `'jump' | 'hop' | 'stomp' | 'crouch' | 'kneel' | 'collapse' | 'backstep' | 'zukkoke' | 'zukkokeLite' | 'bow' | 'bowDeep' | 'bowQuick' | 'bowInsolent' | 'shina' | 'bowSorry' | 'doubletake' | 'nodOff'` — played through `engine.play(...)` exactly like `Gesture`/`ArmAct`. Trunk channels (pitch/hp/sh/yaw/cr/hr) land on `MANAGED` bones (spine/chest/neck/head/shoulders); the true root channels (y/z/tilt/lookDown, none of which are a bone) land on `Pose.root`. See [Full-body contract](#full-body-contract-v012) for the channel table and the sign convention.
 - `rhf(p, rise, fall)` — (v0.12) the "rise-hold-fall" trapezoid envelope most `ROOT_ACTS` entries shape themselves with (ramp 0→1 over `rise`, hold, ramp 1→0 over the last `fall`) — root acting reads as WEIGHT (a slow settle, a held bow) more than `swingEnv`'s spring-like anticipation/overshoot.
 - `ROOT_ACTS` — the exported vocabulary table (`{ dur, cam?, noLook?, pip?, f(p) }` per entry). `cam`/`noLook`/`pip` are camera/expression HINTS, not motion — motion-engine keeps them as plain data (mirrored onto the `RootAct` instance) for a downstream camera/expression layer to interpret; it never reads them itself.
