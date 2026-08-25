@@ -12,7 +12,7 @@
 | 非通約な正弦波の重ね合わせ | `noise()` / `NoiseIdle` |
 | 少数プリミティブの層状合成 | `TargetBuffer` + `MotionEngine.update` のパイプライン |
 
-前提となる設計制約は README のとおり: **pure / 依存ゼロ / three.js・VRM・DOM を import しない / 決定論的(`Math.random` 禁止)/ headless で単体テスト可能**。出力は plain-data な Pose `{ boneName: [x,y,z] }`(ラジアン, 正規化 VRM ローカル空間, three.js の `'XYZ'` Euler 順)。ホスト側レンダラがこれをボーンに適用する。
+前提となる設計制約は README のとおり: **pure / 依存ゼロ / three.js・VRM・DOM を import しない / 決定論的(`Math.random` 禁止)/ headless で単体テスト可能**。出力は plain-data な Pose で、ボーン回転 `{ boneName: [x,y,z] }`(ラジアン, 正規化 VRM ローカル空間, three.js の `'XYZ'` Euler 順)に、ボーンではない `root` レコード `{ y, z, tilt, lookDown }` が加わる。ホスト側レンダラはボーン値を VRM に適用し、`root` はアバターのルート/表情レイヤーで必要に応じて適用する。
 
 ---
 
@@ -114,10 +114,11 @@ rest(base) → NoiseIdle → EmotionPose → actions[] → (spring smoothing) �
 ### Pose(出力)
 
 ```
-{ [boneName]: [x, y, z] }   // Euler ラジアン, three.js 'XYZ' 順, 正規化 VRM ローカル
+{ [boneName]: [x, y, z], root: { y, z, tilt, lookDown } }
+// bone 値: Euler ラジアン, three.js 'XYZ' 順, 正規化 VRM ローカル
 ```
 
-`MANAGED` に列挙されたボーンのみ。VRM が持たないボーン(clavicle は任意, 指関節が少ない手など)はレンダラ側で `getNormalizedBoneNode → null` として単に落ちるので、フルセットを列挙して安全。
+ボーンキーは `MANAGED` に列挙され、`root` は意図的にボーン名ではない。`RootAct` がないときも `root` は常に存在しゼロになる。VRM が持たないボーン(clavicle は任意, 指関節が少ない手など)はレンダラ側で `getNormalizedBoneNode → null` として単に落ちるので、フルセットを列挙して安全。Pose の全キーを列挙するホストは、`root` をスキップするか、ボーンノードの有無を確認してから回転を適用する。
 
 ### rig geometry(IK の入力)
 
@@ -163,7 +164,7 @@ geo = { pU, pL, pH,          // shoulder位置 / elbowオフセット / wristオ
 `test.mjs` を `node test.mjs`(= `npm test`)で回す。**ブラウザも three.js も要らない**のが設計上の主張。効いている観点:
 
 1. **決定論** — 同一入力で pose ストリームがバイト一致(`Math.random` 不在の証明)。
-2. **well-formed** — 全フレームで `MANAGED` 各ボーンが有限の `[x,y,z]`。
+2. **well-formed** — 全フレームで `MANAGED` 各ボーンと `Pose.root` の各チャネルが有限。
 3. **idle が生きている** — 頭が実際にドリフトする(`>0.01`)が暴れない(`<0.3` に有界)。
 4. **一発芸の整定** — gesture がピークに達し、その後 rest に `<0.08` まで戻る。
 5. **バネの安定性** — 巨大 dt スパイクで NaN/発散しない。

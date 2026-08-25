@@ -569,7 +569,7 @@ function runPlace(target, opts, secs = 2.2) {
   ok(minClear(true) > capsule.r - 0.02, 'the constraint lifts the whole forearm out of the capsule');
 }
 
-// 35) headScratch is anatomical: the forearm folds on the natural flexion axis
+// 35b) headScratch is anatomical: the forearm folds on the natural flexion axis
 //     (+z, toward the biceps) and NEVER hyperextends (z < 0 = 逆反り) at any
 //     gain — the old -y fold read as a backward-bending elbow on real rigs.
 {
@@ -599,7 +599,7 @@ const handOf = (pose, side) => { const g = side === 'right' ? GEO_R : GEO_L; ret
 const elbowOf = (pose, side) => { const g = side === 'right' ? GEO_R : GEO_L; const q = qFromEulerXYZ(pose[side + 'UpperArm']); return [g.pU[0] + (q[3]*2*(q[1]*g.pL[2]-q[2]*g.pL[1]) + g.pL[0] + (q[1]*(2*(q[0]*g.pL[1]-q[1]*g.pL[0]))-q[2]*(2*(q[2]*g.pL[0]-q[0]*g.pL[2])))), 0, 0]; };
 const runAct = (name, frames) => { const eng = new MotionEngine(); const a = new ArmAct(name, GEO_BOTH); eng.play(a); const out = []; for (let i = 0; i < frames; i++) out.push(eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 })); return out; };
 
-// 36) every arm act runs, moves, and settles back to rest
+// 36b) every arm act runs, moves, and settles back to rest
 {
   let allSettled = true, allMoved = true;
   for (const n of Object.keys(ARM_ACTS)) {
@@ -796,12 +796,16 @@ import { RootAct, ROOT_ACTS, rhf } from './index.js';
 // meaningfully skew the ratio — a real act like 'bow' peaks too close to idle's
 // own noise floor on 'head' to isolate the split precisely.
 {
-  ROOT_ACTS.__pitchTest = { dur: 3.0, f: () => ({ pitch: 12 }) };
+  // Inject the synthetic spec directly on the RootAct instance — ROOT_ACTS is
+  // frozen (issue #16), so we no longer mutate the table from the outside.
   const eng = new MotionEngine();
-  eng.play(new RootAct('__pitchTest'));
+  const act = new RootAct('__pitchTest');
+  act.spec = { dur: 3.0, f: () => ({ pitch: 12 }) };
+  act.dur = 3.0;
+  act.done = false;
+  eng.play(act);
   let last;
   for (let i = 0; i < 150; i++) last = eng.update(1 / 60, { t: i / 60, phase: 0, pose: {}, poseW: 0 });
-  delete ROOT_ACTS.__pitchTest;
   const v = { spine: last.spine[0], chest: last.chest[0], neck: last.neck[0], head: last.head[0] };
   ok(v.spine > 0 && v.chest > 0 && v.neck > 0 && v.head > 0, 'pitch: all 4 spine-chain bones bend POSITIVE (forward), matching motion-engine\'s own convention');
   const ratio = (a, b) => v[a] / v[b];
