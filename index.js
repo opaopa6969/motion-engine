@@ -545,6 +545,7 @@ export const ARM_ACTS = {
     right: (e) => ({ at: [0.12, 0.55, 0.45], pole: [1, -0.2, 0], curl: 0.7 }),
   },
 };
+Object.freeze(ARM_ACTS);
 
 export class ArmAct {
   /**
@@ -769,6 +770,7 @@ export const ROOT_ACTS = {
   doubletake: { dur: 0.8, f: (p) => ({ yaw: Math.sin(p * Math.PI * 3) * 0.30 }) },
   nodOff: { dur: 4.0, noLook: true, f: (p) => ({ pitch: Math.max(0, Math.sin(p * Math.PI * 2)) * 0.25, hp: 0.1 }) },
 };
+Object.freeze(ROOT_ACTS);
 
 /**
  * A full-body root/trunk action: {dur, f(p) → channels}, played through the same
