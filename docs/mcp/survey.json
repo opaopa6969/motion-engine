@@ -180,8 +180,7 @@
   "risks": [
     "MotionEngine はステートフル(キュー・スプリング)。MCP のステートレス呼び出しモデルと相性が悪い。セッション単位の engine インスタンス保持か、クライアント側で状態を持ち毎フレーム送り返す設計が必要",
     "毎フレーム step を呼ぶモデルは MCP(1 call = 往復) だとレイテンシが乗る。実際のレンダラは import で使うため、MCP 経由の step はデバッグ/検証用に限る",
-    "IK の geo(pU/pL/pH/restU/restL) はホストが VRM から測定する必要があり、MCP tool だけでは完結しない(測定支援 tool か guide が必要)",
-    "CDN タグ(v0.1.0)と package.json(0.12.0)が不整合(spec-motion-engine.md 未確定事項)。MCP 公開前にタグ運用を決める"
+    "IK の geo(pU/pL/pH/restU/restL) はホストが VRM から測定する必要があり、MCP tool だけでは完結しない(測定支援 tool か guide が必要)"
   ],
   "open_questions": [
     "MotionEngine のステート(キュー/スプリング)を MCP セッションでどう保持するか(stateful session を許容するか、クライアント側で Pose+内部状態を保持して毎回送るか)",

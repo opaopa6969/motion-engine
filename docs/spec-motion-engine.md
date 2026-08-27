@@ -30,5 +30,10 @@ root の移動・傾きは骨回転ではなく、VRM のボーン名として�
 
 ## 未確定
 
-- CDN の安定参照先は未確定。現在の README の `v0.1.0` はコードの `package.json` `0.12.0` と一致しないが、v0.12.0 の公開タグはこのリポジトリで確認できない。公開・タグ運用を決めるまで URL は変更しない。
 - `Pose` の将来の破壊的変更に schema version を導入する時期は未定。現行の `root` 追加は互換性を壊さないため、まだ導入しない。
+
+## CDN のリリース契約
+
+README の CDN import は package version と同じ immutable tag に固定する。
+現行は `v0.12.0`。公開 API を更新するときは package version と tag を同時に
+更新し、未作成の tag や mutable な branch を安定参照先にしない。
