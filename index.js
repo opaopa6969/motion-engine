@@ -373,6 +373,9 @@ export const GESTURE_DUR = Object.freeze({
   tsumogiri: 1.4, headScratch: 1.8, fistPump: 1.0, slump: 1.5,
   recoil: 0.9, crossArms: 1.8, nod: 1.0, shrug: 1.2, lean: 1.5, smirkTilt: 1.4,
   sigh: 1.6, exhale: 1.4,
+  // Compatibility metadata only: these four callbacks moved to ARM_ACTS in
+  // v0.11. GESTURE_DUR is public, so keep its existing keys; they do not make
+  // the names executable by Gesture. headShakeRue/ponder remain real gestures.
   clap: 2.0, gutsPose: 1.8, banzai: 1.6, fistToForehead: 2.3, headShakeRue: 2.2, ponder: 3.6,
 });
 
@@ -407,7 +410,10 @@ export function swingEnv(p, opts) {
 const GESTURE_ENV = {
   headScratch: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
   crossArms: { anticipate: 0.08, overshoot: 0.05 },   // folded forearms: keep the reverse sway subtle
-  // the v0.10 acting set is flexion-heavy — no negative phases (no 逆反り)
+  // Compatibility metadata for names moved to ARM_ACTS in v0.11. Gesture has
+  // no callback for these four names and remains a no-op, but existing
+  // constructed instances keep exposing their historical `env` values.
+  // The v0.10 acting set is flexion-heavy — no negative phases (no 逆反り).
   clap: { windup: 0, anticipate: 0, follow: 0.1, overshoot: 0.04 },
   gutsPose: { windup: 0, anticipate: 0, follow: 0.12, overshoot: 0.05 },
   banzai: { windup: 0.1, anticipate: 0.08, follow: 0.12, overshoot: 0.05 },  // a small crouch before the throw reads well
