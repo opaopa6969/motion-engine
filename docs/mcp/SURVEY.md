@@ -80,7 +80,6 @@ estimated_effort: M
 
 - MotionEngine のステート(キュー/スプリング)と MCP ステートレスモデルの相性。`step` を毎回往復させるとレイテンシが乗る。実レンダラは import で使うため、MCP 経由 `step` はデバッグ/検証用に割り切るべき。
 - IK の `geo`(pU/pL/pH/restU/restL)はホストが VRM から測定する必要があり、MCP tool 単独では完結しない(測定支援 tool か guide が要る)。
-- CDN タグ(v0.1.0)と `package.json`(0.12.0)が不整合(`docs/spec-motion-engine.md` 未確定事項)。MCP 公開前にタグ運用を決める。
 - 秘密情報・外部 API 課金・破壊的操作はなし(純粋計算ライブラリのため)。
 
 ## 持ち主への質問

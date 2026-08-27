@@ -96,7 +96,7 @@ v0.11 までこのエンジンは上半身専用だった — ルート移動も
 
 ```html
 <script type="importmap">
-{ "imports": { "motion-engine": "https://cdn.jsdelivr.net/gh/opaopa6969/motion-engine@v0.1.0/index.js" } }
+{ "imports": { "motion-engine": "https://cdn.jsdelivr.net/gh/opaopa6969/motion-engine@v0.12.0/index.js" } }
 </script>
 ```
 
