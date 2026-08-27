@@ -43,7 +43,7 @@ vrm.update(dt);
 ## API
 
 - `new MotionEngine()` → `update(dt, ctx)` が Pose を返す。`play(action)`、`clear()`(v0.12、キューされたアクションを破棄)、`syncFrom(pose)`、`addConstraint(fn)`。`ctx.gain`(v0.4, デフォルト 1, 0.2–2.5 にクランプ)は一発芸ジェスチャの振幅をスケールする — キャラごとの大袈裟さ。
-- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump' | 'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt' | 'sigh' | 'exhale' | 'clap' | 'gutsPose' | 'banzai' | 'fistToForehead' | 'headShakeRue' | 'ponder'`。`env`(v0.8)は予備動作/follow-through を調整する(`{windup, follow, anticipate, overshoot}`; `{windup:0}` = 素のベル型)。
+- `new Gesture(name, dur?, env?)` — `'tsumogiri' | 'headScratch' | 'fistPump' | 'slump' | 'recoil' | 'crossArms' | 'nod' | 'shrug' | 'lean' | 'smirkTilt' | 'sigh' | 'exhale' | 'headShakeRue' | 'ponder'`。`env`(v0.8)は予備動作/follow-through を調整する(`{windup, follow, anticipate, overshoot}`; `{windup:0}` = 素のベル型)。ここでの `ponder` は従来の Euler 差分ジェスチャであり、`new ArmAct('ponder', geo)` はリグ形状から両腕を配置する別の IK 駆動版。
 - `swingEnv(p, opts?)`(v0.8) — 予備動作+follow-through エンベロープ(逆方向への windup → スイング → rest を通り過ぎて整定)。ジェスチャ/捨て牌の「溜め」を支える再利用可能なプリミティブ。`Place`/`Pick` は `opts.anticipate`(溜めの深さ、デフォルト 0.3)を取る。
 - `new Reach(side, geo, target, dur?, opts?)` — IK reach。`geo = { pU, pL, pH, restU, restL }` はホストがリグから測定して渡す。`opts.pole`(v0.6)— **肘**が押し出される親フレーム方向(着席時の reach なら下後方); デフォルトはリグ本来の rest 曲げ。
 - `new Place(side, geo, target, opts?)` — v0.2 の重さを考慮した設置。`geo` は `restW`(手首)+ `pole` も取る。`opts.style` ∈ `PLACE_STYLES`(`gentle`/`snap`/`linger`/`jam`/`timid`)。`{ arc, lead, snap, twist, dwell, release, sink, pole, wristAim, anticipate }` のいずれかで上書き可能(`anticipate` については下記 `swingEnv` 参照)。肩と手首も駆動する。
@@ -58,7 +58,7 @@ vrm.update(dt);
   - `projectOut(point, colliders, margin?, passes?)` — その裏側にある純粋な投影処理。ホスト側での利用のために export。
 - `fkHand(pU, pL, pH, upperQ, lowerQ)` — 順運動学(IK の往復チェック)。
 - `new ArmAct(name, geo, dur?)` — (v0.11) `ARM_ACTS` の意図ベース腕演技。手のターゲット、ポール、手首の向き、指のカールを同じ2ボーン IKで解く。
-- `ARM_ACTS` — 腕演技の export 語彙。`clap`/`gutsPose`/`banzai`/`fistToForehead`/`ponder` と追加14種を含む。
+- `ARM_ACTS` — 腕演技の export 語彙。`clap`/`gutsPose`/`banzai`/`fistToForehead`/`ponder` と追加14種を含む。先頭4種は `Gesture` ではなく `ArmAct` で利用する。`ponder` には現在、IK 駆動の `ArmAct` 版と、上記の別実装である Euler 差分 `Gesture` 版の両方が存在する。
 - `makeArmConstraint({ side, geo, colliders, margin })` — `engine.addConstraint` に渡す post-pose 腕衝突制約。
 - `new RootAct(name, dur?)` —(v0.12)全身の体幹/ルート演技: `'jump' | 'hop' | 'stomp' | 'crouch' | 'kneel' | 'collapse' | 'backstep' | 'zukkoke' | 'zukkokeLite' | 'bow' | 'bowDeep' | 'bowQuick' | 'bowInsolent' | 'shina' | 'bowSorry' | 'doubletake' | 'nodOff'`。`Gesture`/`ArmAct` と同じく `engine.play(...)` で再生する。体幹チャネル(pitch/hp/sh/yaw/cr/hr)は `MANAGED` のボーン(spine/chest/neck/head/肩)へ、真のルートチャネル(y/z/tilt/lookDown。どれもボーンではない)は `Pose.root` へ着地する。チャネル表と符号規約は [全身契約](#全身契約-v012) を参照。
 - `rhf(p, rise, fall)` —(v0.12)`ROOT_ACTS` の各エントリが自前で使う「立上-保持-戻り」の台形エンベロープ(最初の `rise` で 0→1、保持、最後の `fall` で 1→0)。全身の演技は `swingEnv` のようなバネ的な予備動作/行き過ぎより「重さ」(ゆっくり沈み込む、お辞儀を保持する)として読ませたいので、素の台形の方が実感に合う。
