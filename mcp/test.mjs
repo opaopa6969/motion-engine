@@ -51,6 +51,13 @@ async function main() {
   if (r1j.gestures.length > 0 && r1j.arm_acts.length > 0 && r1j.root_acts.length > 0 && r1j.place_styles.length > 0) {
     ok(`list_acts: ${r1j.gestures.length} gestures, ${r1j.arm_acts.length} arm_acts, ${r1j.root_acts.length} root_acts, ${r1j.place_styles.length} place_styles`);
   } else ng('list_acts', JSON.stringify(r1j));
+  // #22: gestureNames() must derive from GESTURE_DUR (filtered), not a stale
+  // hardcoded list. `ponder` is a real gesture (GESTURES callback) and must be
+  // listed; the stale `yareyare` must not reappear.
+  if (r1j.gestures.includes('ponder')) ok('list_acts: gestures includes ponder');
+  else ng('list_acts.gestures', `missing 'ponder' (got ${JSON.stringify(r1j.gestures)})`);
+  if (!r1j.gestures.includes('yareyare')) ok('list_acts: stale yareyare excluded');
+  else ng('list_acts.gestures', `stale 'yareyare' present (got ${JSON.stringify(r1j.gestures)})`);
 
   const r2 = await client.callTool({
     name: 'solve_ik',
@@ -61,8 +68,32 @@ async function main() {
     },
   });
   const r2j = JSON.parse(r2.content[0].text);
-  if (r2j.upperQ && r2j.lowerQ && r2j.upperQ.length === 4 && r2j.lowerQ.length === 4) ok('solve_ik: upperQ/lowerQ [x,y,z,w]');
-  else ng('solve_ik', JSON.stringify(r2j));
+  // #21: the prior bug passed Euler arrays straight into solveTwoBone, which
+  // produced [NaN,NaN,NaN,NaN] — but length===4 hid it. Assert every component
+  // is finite so a regression can't silently pass green.
+  const qFinite = (q) => Array.isArray(q) && q.length === 4 && q.every((x) => Number.isFinite(x));
+  if (qFinite(r2j.upperQ) && qFinite(r2j.lowerQ)) ok('solve_ik: upperQ/lowerQ finite [x,y,z,w]');
+  else ng('solve_ik', `non-finite quaternions: upperQ=${JSON.stringify(r2j.upperQ)} lowerQ=${JSON.stringify(r2j.lowerQ)}`);
+
+  // #23: elbow is [min,max] (2-elem) and shoulder is a scalar — the shapes
+  // DEFAULT_BODY recommends. The old Vec3 schema rejected these, and forcing
+  // shoulder into a 3-array silently disabled the cone limit. Verify the
+  // documented values now pass through the schema and produce finite output,
+  // and that the shoulder cone actually clamps (scalar 0.5 rad vs free ≈ 1.57
+  // rad for a target 90° off-rest). Reachable target used so the limit binds.
+  const r2b = await client.callTool({
+    name: 'solve_ik',
+    arguments: {
+      pU: [0, 0.3, 0], pL: [0, 0.15, 0], pH: [0, 0, 0],
+      restU: [0, 0, 0], restL: [0, 0, 0],
+      target: [0.25, 0, 0],
+      elbow: [0.35, 2.95],
+      shoulder: 2.0,
+    },
+  });
+  const r2bj = JSON.parse(r2b.content[0].text);
+  if (qFinite(r2bj.upperQ) && qFinite(r2bj.lowerQ)) ok('solve_ik: DEFAULT_BODY elbow/shoulder accepted (finite)');
+  else ng('solve_ik DEFAULT_BODY', `non-finite: upperQ=${JSON.stringify(r2bj.upperQ)} lowerQ=${JSON.stringify(r2bj.lowerQ)}`);
 
   const r3 = await client.callTool({
     name: 'grip_pose',

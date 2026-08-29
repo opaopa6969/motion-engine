@@ -7,7 +7,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import {
   MotionEngine, Gesture, ArmAct, RootAct, Reach, Place, Pick, Grip,
-  solveTwoBone, gripPose, ARM_ACTS, ROOT_ACTS, PLACE_STYLES, MANAGED,
+  solveTwoBone, gripPose, qFromEulerXYZ,
+  ARM_ACTS, ROOT_ACTS, PLACE_STYLES, MANAGED, GESTURE_DUR,
 } from '../index.js';
 
 const VERSION = '0.12.0';
@@ -19,8 +20,15 @@ const Vec3 = z.array(z.number()).length(3);
 const Vec4 = z.array(z.number()).length(4);
 
 function gestureNames() {
+  // Derive the gesture vocabulary from GESTURE_DUR's keys (public metadata that
+  // tracks real gestures), filtered by `new Gesture(n).done` so any name whose
+  // callback moved to ARM_ACTS (clap/gutsPose/banzai/fistToForehead) is excluded.
+  // No hardcoded list — a newly added gesture only needs a GESTURES entry to
+  // show up here, and a stale name can no longer linger in a hand-maintained
+  // array. GESTURE_DUR carries the compat keys above, so it is the superset to
+  // filter from.
   const names = [];
-  for (const n of ['tsumogiri','headScratch','fistPump','slump','recoil','crossArms','nod','shrug','lean','smirkTilt','sigh','exhale','yareyare','headShakeRue']) {
+  for (const n of Object.keys(GESTURE_DUR)) {
     const g = new Gesture(n);
     if (!g.done) names.push(n);
   }
@@ -128,19 +136,23 @@ export function createServer() {
 
   server.tool(
     'solve_ik',
-    'Solve 2-bone IK (stateless pure function). Returns upper/lower quaternions.',
+    'Solve 2-bone IK (stateless pure function). Returns upper/lower quaternions. restU/restL are rest rotations as Euler [x,y,z] (radians); elbow is [min,max] interior angle (radians), shoulder is a scalar cone angle (radians) — see DEFAULT_BODY.',
     {
       pU: Vec3, pL: Vec3, pH: Vec3,
       restU: Vec3, restL: Vec3,
       target: Vec3,
       pole: Vec3.optional(),
-      elbow: Vec3.optional(),
-      shoulder: Vec3.optional(),
+      elbow: z.tuple([z.number(), z.number()]).optional(),
+      shoulder: z.number().optional(),
     },
     async (args) => {
+      // Engine's solveTwoBone consumes restU/restL as quaternions; the MCP
+      // surface takes Eulers (matching Reach/Place/ArmAct's geo.restU/restL
+      // convention) and converts here. Without this, qApply(EulerArray, v)
+      // yields non-finite quaternions (#21).
       const { upperQ, lowerQ } = solveTwoBone(
         args.pU, args.pL, args.pH,
-        args.restU, args.restL, args.target,
+        qFromEulerXYZ(args.restU), qFromEulerXYZ(args.restL), args.target,
         { pole: args.pole, elbow: args.elbow, shoulder: args.shoulder },
       );
       return { content: [{ type: 'text', text: JSON.stringify({ upperQ, lowerQ }) }] };
