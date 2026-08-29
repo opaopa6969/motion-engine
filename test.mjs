@@ -900,6 +900,76 @@ import { RootAct, ROOT_ACTS, rhf } from './index.js';
   ok(ok1, 'a pre-v0.12 consumer (unaware of neck/root) drives every bone it knows about unmodified');
 }
 
+// --- hardening: boundary / edge-case / regression-prone branches -------------
+// These target BEHAVIORS that would break a host if regressed but were not
+// previously pinned by a test. Implementation is NOT changed; if any of these
+// fail it's an engine bug to be filed as an issue.
+
+// 47) solveTwoBone stays finite and inside the reach annulus at the degenerate
+//     boundary where the target sits ON the shoulder (d→0). The solver clamps
+//     d to |L1-L2|, so the hand must land finite and never exceed max reach.
+{
+  const L1 = vl(ARM.pL), L2 = vl(ARM.pH);
+  const onShoulder = [ARM.pU[0], ARM.pU[1], ARM.pU[2]];
+  const { upperQ, lowerQ } = solveTwoBone(ARM.pU, ARM.pL, ARM.pH, RU, RL, onShoulder);
+  const hand = fkHand(ARM.pU, ARM.pL, ARM.pH, upperQ, lowerQ);
+  const reach = Math.hypot(hand[0] - ARM.pU[0], hand[1] - ARM.pU[1], hand[2] - ARM.pU[2]);
+  ok([...upperQ, ...lowerQ, ...hand].every(Number.isFinite), 'solveTwoBone(target=shoulder) stays finite (no NaN)');
+  ok(reach <= L1 + L2 + 1e-6, 'solveTwoBone(target=shoulder) hand stays inside the reach shell');
+  ok(reach >= Math.abs(L1 - L2) - 1e-6, 'solveTwoBone(target=shoulder) hand stays outside the inner annulus');
+}
+
+// 48) MotionEngine.update tolerates a MISSING ctx (just dt) — the host-friendly
+//     contract: every bone finite, pose.root present. A regression that made
+//     ctx mandatory would break every caller that passes only dt.
+{
+  const eng = new MotionEngine();
+  eng.play(new Gesture('fistPump'));
+  let last;
+  for (let i = 0; i < 60; i++) last = eng.update(1 / 60);   // no ctx at all
+  let allFinite = true;
+  for (const bone of MANAGED) if (!last[bone] || !finite(last[bone])) allFinite = false;
+  ok(allFinite, 'update(dt) with no ctx yields finite bones for every MANAGED bone');
+  ok(last.root && typeof last.root.y === 'number' && Number.isFinite(last.root.y), 'update(dt) with no ctx still emits pose.root');
+}
+
+// 49) qToEulerXYZ handles the gimbal-lock neighborhood (Y → ±π/2) without NaN
+//     and preserves the Y (pitch) component — the second branch of the inverse
+//     (|m13| >= 0.9999999) was never exercised by the round-trip test.
+{
+  for (const y of [Math.PI / 2, -Math.PI / 2]) {
+    const e = [0.3, y, 0.4];
+    const q = qFromEulerXYZ(e);
+    const b = qToEulerXYZ(q);
+    ok(b.every(Number.isFinite), `qToEulerXYZ at gimbal lock (Y=${y.toFixed(3)}) is finite`);
+    ok(Math.abs(b[1] - y) < 1e-6, `qToEulerXYZ preserves Y at gimbal lock (got ${b[1].toFixed(6)})`);
+  }
+}
+
+// 50) rhf is identity-shaped at the boundaries every ROOT_ACT relies on:
+//     rhf(0)=rhf(1)=0 (start/end at rest), rhf(mid; rise=fall=0)=1 (instant on),
+//     and rhf never goes negative inside [0,1]. A regression in this primitive
+//     would silently distort ALL 17 root acts.
+{
+  ok(rhf(0, 0.2, 0.2) === 0, 'rhf(0) = 0 (start at rest)');
+  ok(rhf(1, 0.2, 0.2) === 0, 'rhf(1) = 0 (end at rest)');
+  ok(rhf(0.5, 0, 0) === 1, 'rhf(mid; rise=fall=0) = 1 (instant-on trapezoid)');
+  ok(rhf(0.1, 0, 0.2) === 1, 'rhf in the hold region = 1 (past instant rise, before fall)');
+  let maxV = -1;
+  for (let i = 0; i <= 100; i++) { const v = rhf(i / 100, 0.2, 0.2); if (v > maxV) maxV = v; }
+  ok(maxV === 1, 'rhf peaks at exactly 1 inside [0,1] (never overshoots)');
+}
+
+// 51) projectOut is a NO-OP identity (returns the SAME reference) when there
+//     are no colliders — Reach/Place rely on this fast path; a regression that
+//     returned a copy or undefined would break reach targeting and allocation.
+{
+  const p = [1, 2, 3];
+  ok(projectOut(p, []) === p, 'projectOut([], empty) returns the same reference');
+  ok(projectOut(p, null) === p, 'projectOut(null) returns the same reference');
+  ok(projectOut(p, undefined) === p, 'projectOut(undefined) returns the same reference');
+}
+
 console.log(`motion-engine: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
