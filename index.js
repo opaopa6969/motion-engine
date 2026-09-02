@@ -1,3 +1,4 @@
+import { clamp } from 'kazu';
 // motion-engine — procedural human-motion engine for VRM avatars.
 //
 // GOAL: synthesize *natural* body action WITHOUT motion capture. Instead of
@@ -876,7 +877,7 @@ const vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], 
 const vlen = (a) => Math.hypot(a[0], a[1], a[2]);
 const vnorm = (a) => { const l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const vscale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
-const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
+
 
 // minimal quaternion ops (plain [x,y,z,w]); Euler uses three.js' 'XYZ' order so
 // the output drops straight into bone.rotation.set(x,y,z) with no surprises.

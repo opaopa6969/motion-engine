@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "kazu": "git+https://github.com/opaopa6969/kazu.git#v1.0.0",
     "zod": "^4.4.3"
   }
 }
