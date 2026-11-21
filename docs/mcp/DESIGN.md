@@ -93,10 +93,12 @@ Phase 1 からの差分なし。survey の全 capability を tools/resources と
 - **health_check**: /healthz
 - **mcp**: enabled, path=/mcp, namespace=motion, min_role=MEMBER, timeoutMs=110000
 
+HTTP サーバーは既定で `127.0.0.1` に bind する。`MCP_HOST` で `127.0.0.1`、`::1`、`localhost` を選べる。`localhost` は名前解決せず `127.0.0.1` に割り当てる。空文字を含むその他の値は、backend 用 Bearer 検証が未実装のため listen 前に拒否する。認可の委譲と別ホスト接続の要件は [ADR 0001](https://github.com/opaopa6969/shitate-engine/blob/main/docs/adr/0001-mcp-http-authorization.md) を参照。
+
 ## 9. テスト方針
 
 e2e テスト（`mcp/test.mjs`）:
-1. サーバ起動（PORT=0 または一時ポート）
+1. サーバ起動（PORT=0）。既定と `MCP_HOST` の許可先で実際の待受 URL と接続を検証し、許可外の値では終了コード 1 とエラーメッセージを確認
 2. `GET /healthz` → 200, `{ok:true, name, version}`
 3. MCP Client で `initialize` → `tools/list` → 6 tools が見える
 4. `list_acts` → gestures/arm_acts/root_acts/place_styles が返る
@@ -107,4 +109,4 @@ e2e テスト（`mcp/test.mjs`）:
 9. resources: `motion://spec` / `motion://guide` / `motion://pose_schema` が読める
 10. セッション分離: 別セッションで play しても混ざらない
 
-CI は現状 `node test.mjs`（既存テスト）のみ。`mcp/test.mjs` を追加し、`npm test` に含める。
+`npm test` でコアテストと MCP の e2e テストを実行する。GitHub Actions では非公開の依存にアクセスせず、`node --test mcp/http-listener.test.mjs` で待受処理を検証する。

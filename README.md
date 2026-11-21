@@ -110,6 +110,8 @@ node mcp/server.mjs --http 9201   # PORT env also supported
 node mcp/test.mjs                  # e2e tests
 ```
 
+The HTTP server binds to `127.0.0.1` by default. Set `MCP_HOST` to `127.0.0.1`, `::1`, or `localhost` (`127.0.0.1` without DNS). Other values, including an empty value, fail at startup. The loopback listener relies on the Gateway and MCP facade for remote client authorization. See [ADR 0001](https://github.com/opaopa6969/shitate-engine/blob/main/docs/adr/0001-mcp-http-authorization.md) for the TLS and backend Bearer requirements for cross-host connections.
+
 ## Test
 
 ```sh

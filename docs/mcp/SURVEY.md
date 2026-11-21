@@ -65,7 +65,7 @@ Phase 2 で issue-hub が協調する際、上記の相手側 survey.json に既
 
 新規に実装が必要なもの:
 - `/healthz`(200)
-- `PORT` 環境変数・bind `0.0.0.0`
+- `PORT` 環境変数・既定の bind は `127.0.0.1`（[ADR 0001](https://github.com/opaopa6969/shitate-engine/blob/main/docs/adr/0001-mcp-http-authorization.md)）
 - Streamable HTTP `/mcp`
 - MCP サーバ実装(tools/prompts/resources 露出)
 - `volta.service.json` manifest

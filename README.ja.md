@@ -109,6 +109,8 @@ node mcp/server.mjs --http 9201   # PORT 環境変数も対応
 node mcp/test.mjs                  # e2e テスト
 ```
 
+HTTP サーバーの既定の bind 先は `127.0.0.1` です。`MCP_HOST` には `127.0.0.1`、`::1`、`localhost`（名前解決せず `127.0.0.1` として扱う）を指定できます。空文字を含むその他の値では起動に失敗します。リモートクライアントの認可は Gateway と MCP ファサードが担います。別ホストとの接続に必要な TLS と backend 用 Bearer 検証は [ADR 0001](https://github.com/opaopa6969/shitate-engine/blob/main/docs/adr/0001-mcp-http-authorization.md) を参照してください。
+
 ## テスト
 
 ```sh

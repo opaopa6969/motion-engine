@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { listenOnLoopback } from './http-listener.mjs';
 import {
   MotionEngine, Gesture, ArmAct, RootAct, Reach, Place, Pick, Grip,
   solveTwoBone, gripPose, qFromEulerXYZ,
@@ -304,7 +305,7 @@ Returns gesture/arm_act/root_act/place_style name lists.
   return { server, engines };
 }
 
-async function serveHttp(port) {
+async function serveHttp(port, host) {
   const transports = new Map();
   const httpServer = http.createServer(async (req, res) => {
     res.setHeader('content-encoding', 'identity');
@@ -348,16 +349,15 @@ async function serveHttp(port) {
       else res.end();
     }
   });
-  const bindAddr = '0.0.0.0';
-  httpServer.listen(port, bindAddr, () => log('http listening', { url: `http://${bindAddr}:${port}/mcp` }));
+  listenOnLoopback(httpServer, port, (url) => log('http listening', { url }), host);
   return httpServer;
 }
 
 const argv = process.argv.slice(2);
 if (argv.includes('--http')) {
   const port = Number(process.env.PORT || argv[argv.indexOf('--http') + 1] || 9201);
-  serveHttp(port).catch((e) => { log('http failed', { error: String(e?.stack || e) }); process.exit(1); });
+  serveHttp(port, process.env.MCP_HOST).catch((e) => { log('http failed', { error: String(e?.stack || e) }); process.exit(1); });
 } else {
-  process.stderr.write('usage: server.mjs --http [port]  (or set PORT env)\n');
+  process.stderr.write('usage: server.mjs --http [port]  (env: PORT, MCP_HOST)\n');
   process.exit(2);
 }
