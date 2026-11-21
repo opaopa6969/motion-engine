@@ -1,30 +1,82 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-const PORT = 19101;
-const BASE = `http://127.0.0.1:${PORT}`;
+const SERVER_ARGS = ['mcp/server.mjs', '--http', '0'];
 let passed = 0, failed = 0;
 let serverProc;
 
 function ok(name) { passed++; console.log(`  ✓ ${name}`); }
 function ng(name, msg) { failed++; console.error(`  ✗ ${name}: ${msg}`); }
 
-async function main() {
-  serverProc = spawn('node', ['mcp/server.mjs', '--http', String(PORT)], {
-    env: { ...process.env, PORT: String(PORT) },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  serverProc.stderr.on('data', (d) => process.stderr.write(d));
+function serverEnv(host) {
+  const env = { ...process.env, PORT: '0' };
+  delete env.MCP_HOST;
+  if (host !== undefined) env.MCP_HOST = host;
+  return env;
+}
 
-  for (let i = 0; i < 50; i++) {
-    try {
-      const r = await fetch(`${BASE}/healthz`);
-      if (r.ok) break;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
+async function startServer(host, expectedHostname) {
+  const child = spawn(process.execPath, SERVER_ARGS, {
+    env: serverEnv(host),
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const lines = createInterface({ input: child.stderr });
+  child.stderr.on('data', (d) => process.stderr.write(d));
+  try {
+    const [line] = await once(lines, 'line', { signal: AbortSignal.timeout(5000) });
+    const prefix = '[motion-mcp] http listening ';
+    assert.ok(line.startsWith(prefix), line);
+    const { url } = JSON.parse(line.slice(prefix.length));
+    const endpoint = new URL(url);
+    assert.equal(endpoint.hostname, expectedHostname);
+    assert.ok(Number(endpoint.port) > 0, url);
+    assert.equal(endpoint.pathname, '/mcp');
+    return { child, endpoint };
+  } catch (error) {
+    child.kill();
+    throw error;
+  } finally {
+    lines.close();
   }
+}
+
+async function main() {
+  for (const host of ['0.0.0.0', '::', '', 'example.test']) {
+    const result = spawnSync(process.execPath, SERVER_ARGS, {
+      env: serverEnv(host),
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /Invalid MCP_HOST/);
+    assert.match(result.stderr, /backend Bearer verification is not implemented/);
+    assert.match(result.stderr, /https:\/\/github\.com\/opaopa6969\/shitate-engine\/blob\/main\/docs\/adr\/0001-mcp-http-authorization\.md/);
+    assert.doesNotMatch(result.stderr, /http listening/);
+    ok(`MCP_HOST=${JSON.stringify(host)} rejected before listening`);
+  }
+
+  for (const [host, hostname] of [['localhost', '127.0.0.1'], ['127.0.0.1', '127.0.0.1'], ['::1', '[::1]']]) {
+    const { child, endpoint } = await startServer(host, hostname);
+    try {
+      const response = await fetch(new URL('/healthz', endpoint), { signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 200);
+      await response.json();
+      ok(`MCP_HOST=${host} listens on ${hostname}`);
+    } finally {
+      child.kill();
+    }
+  }
+
+  const { child, endpoint } = await startServer(undefined, '127.0.0.1');
+  serverProc = child;
+  const BASE = endpoint.origin;
+  ok('default listens on 127.0.0.1');
 
   const hr = await fetch(`${BASE}/healthz`);
   if (hr.status === 200) {

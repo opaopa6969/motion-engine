@@ -168,7 +168,7 @@
     "needed": true,
     "new_work": [
       "healthz エンドポイント(/healthz が 200)",
-      "PORT 環境変数 bind(0.0.0.0)",
+      "PORT 環境変数・既定の bind は 127.0.0.1（ADR 0001: https://github.com/opaopa6969/shitate-engine/blob/main/docs/adr/0001-mcp-http-authorization.md）",
       "Streamable HTTP の /mcp",
       "MCP サーバ実装(tools/prompts/resources の露出。状態なし engine インスタンスを要求ごとに作成、またはセッション保持)",
       "volta.service.json manifest",
